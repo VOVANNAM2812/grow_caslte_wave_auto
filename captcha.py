@@ -559,6 +559,12 @@ class Detector:
         ranked = sorted(((slot, score, ", ".join(notes.get(slot, [])) or "motion evidence")
                          for slot, score in votes.items()), key=lambda item: -item[1])
         if not ranked:
+            # Tracking can die completely on a fast tumble. The entry cup is
+            # still the best single guess, and the ring usually rolls only one
+            # or two places, so hand the caller a usable starting point instead
+            # of refusing to tap at all.
+            if self.initial_slot is not None:
+                return None, 0, ((self.initial_slot, 0.0, "entry cup, tracking lost"),)
             return None, 0, ()
         if self.initial_slot is None:
             # Without an entry cup the tracking evidence cannot prove anything.

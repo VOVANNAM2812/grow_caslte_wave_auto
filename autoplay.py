@@ -94,6 +94,7 @@ class Screen:
     name: str
     point: tuple[int, int] | None = None
     ready: tuple[int, ...] = ()
+    shifts: tuple[int, ...] = ()
     gold: np.ndarray | None = None
     gems: int | None = None
     layout: str | None = None
@@ -159,14 +160,16 @@ def status_pill(rgb, health):
         dark = (red < 60) & (green < 60) & (blue < 70)
         if any(left <= 260 and right - left >= 190 for left, right in color_runs(frame, 190, 540)):
             # The BOSS label sits left of a short red fill that starts at a
-            # fixed spot, so a red particle behind the HUD cannot fake it.
-            if any(120 <= left <= 175 and right - left >= 40
-                   for left, right in color_runs(fill, 40, 110)):
+            # fixed spot. That spot drifts by a dozen pixels when the capture is
+            # scaled away from 1280 x 720, so the window is deliberately wide;
+            # the long black frame above still keeps stray red particles out.
+            if any(95 <= left <= 210 and right - left >= 35
+                   for left, right in color_runs(fill, 35, 130)):
                 return "boss", y
         # The WAVE label sits left of a long white, late (dark) or full progress.
-        if any(220 <= left <= 255 and right - left >= 200 for left, right in color_runs(pale, 200, 470)):
+        if any(190 <= left <= 285 and right - left >= 190 for left, right in color_runs(pale, 190, 480)):
             return "wave", y
-        if any(220 <= left <= 255 and right - left >= 300 for left, right in color_runs(dark, 300, 470)):
+        if any(190 <= left <= 285 and right - left >= 285 for left, right in color_runs(dark, 285, 480)):
             return "wave", y
     return None
 
@@ -193,24 +196,54 @@ def wave_pill(rgb, health):
     return False
 
 
-def ready_bars(rgb):
+def ready_bars(rgb, drift=26):
     """Indexes of the cyan skill/hero cooldown bars that are full.
 
     The tolerant margins let a capture scaled away from 1280 × 720 still count.
+    A window capture that kept the emulator's title bar shifts the whole HUD
+    down by a few dozen rows, which would hide every bar from its fixed spot, so
+    each bar is searched over a short vertical range.
     """
     ready = []
+    for index, offset in ready_offsets(rgb, drift):
+        ready.append(index)
+    return ready
+
+
+def ready_offsets(rgb, drift=26):
+    """(bar index, vertical offset) for every full cooldown bar.
+
+    The offset is how far the bar sits from its nominal row. A window capture
+    that kept the emulator's title bar pushes the whole HUD down by that much,
+    and the tap has to follow, or skill taps land on empty ground.
+    """
+    hits = []
     half_width, half_height = READY_BAR
     for index, (x, y, _, _) in enumerate(TARGETS):
-        if x + half_width >= rgb.shape[1] or y + half_height >= rgb.shape[0]:
+        if x + half_width >= rgb.shape[1]:
             continue
-        box = rgb[y - half_height:y + half_height + 1, x - half_width:x + half_width + 1]
-        if box.size == 0:
-            continue
-        red, green, blue = box.astype(np.int16).transpose(2, 0, 1)
-        cyan = (blue > 140) & (green > 88) & (blue - red > 38) & (green - red > 30)
-        if cyan.mean() >= 0.70:
-            ready.append(index)
-    return ready
+        best = (0.0, 0)
+        for offset in range(0, drift + 1):
+            for dy in ((offset,) if offset == 0 else (offset, -offset)):
+                cy = y + dy
+                if cy - half_height < 0 or cy + half_height >= rgb.shape[0]:
+                    continue
+                box = rgb[cy - half_height:cy + half_height + 1,
+                          x - half_width:x + half_width + 1]
+                if box.size == 0:
+                    continue
+                red, green, blue = box.astype(np.int16).transpose(2, 0, 1)
+                cyan = (blue > 140) & (green > 88) & (blue - red > 38) & (green - red > 30)
+                coverage = float(cyan.mean())
+                if coverage > best[0]:
+                    best = (coverage, dy)
+                if coverage >= 0.85:
+                    break
+            if best[0] >= 0.85:
+                break
+        if best[0] >= 0.70:
+            hits.append((index, best[1]))
+    return hits
 
 
 def ready_groups(rgb):
@@ -223,7 +256,7 @@ def ready_groups(rgb):
     ys = (146, 241, 331)
 
     counts = [0, 0, 0]
-    for index in ready_bars(rgb):
+    for index, _ in ready_offsets(rgb):
         x, y, _, _ = TARGETS[index]
         column = min(range(3), key=lambda candidate: abs(x - xs[candidate]))
         # A bar drawn between two columns (a moved HUD, a stray slime) is not
@@ -487,7 +520,8 @@ class Vision:
         health = health_row(rgb)
         if health is not None:
             pill = status_pill(rgb, health)
-            ready = ready_bars(rgb)
+            offsets = dict(ready_offsets(rgb))
+            ready = tuple(index for index in offsets)
             # A boss wave shows the BOSS bar instead of the WAVE pill, and a
             # wave whose progress turned dark no longer matches the template.
             # On a battle screen every bar left is a cooldown, so a few ready
@@ -495,7 +529,8 @@ class Vision:
             if ((pill is not None and pill[0] == "boss") or self.matches(rgb, "wave")
                     or self.matches(rgb, "wave_late") or wave_pill(rgb, health)
                     or max(ready_groups(rgb)) >= 3):
-                return Screen("battle", ready=tuple(ready))
+                return Screen("battle", ready=ready,
+                              shifts=tuple(offsets.get(index, 0) for index in ready))
         return Screen("unknown")
 
 
@@ -686,7 +721,7 @@ class Player:
             self.report(time, "Unknown screen: waiting for the main screen or a battle")
             self.wait_notified = True
         if name == "battle":
-            return self.cast(time, screen.ready) if age >= 0.45 else None
+            return self.cast(time, screen.ready, screen.shifts) if age >= 0.45 else None
         if self.acted or age < 0.20:
             return None
         if name == "skip":
@@ -704,19 +739,20 @@ class Player:
         self.acted = True
         return action
 
-    def cast(self, time, ready):
+    def cast(self, time, ready, shifts=()):
         for index in tuple(self.skills_used):
             self.skills_used[index] = 0 if index in ready else self.skills_used[index] + 1
             if self.skills_used[index] >= 2:
                 del self.skills_used[index]
         if time - self.last_skill < 0.30:
             return None
+        shift_of = dict(zip(ready, shifts)) if shifts else {}
         for index in ready:
             if index not in self.skills_used:
                 self.skills_used[index] = 0
                 self.last_skill = time
                 _, _, x, y = TARGETS[index]
-                return Action(f"cast skill {index + 1}", (x, y))
+                return Action(f"cast skill {index + 1}", (x, y + shift_of.get(index, 0)))
         return None
 
 
