@@ -337,8 +337,11 @@ def solve_from_adb_recording(adb, serial, start_screen):
     # The device framebuffer is recorded, so the result does not depend on the
     # LDPlayer window being visible while the round runs.
     recording = subprocess.Popen(
-        [str(adb), "-s", serial, "shell", "screenrecord", "--size", "960x540",
-         "--time-limit", "16", remote],
+        # 60 frames a second: the shuffle lasts under a second and the cup
+        # holding the diamond is told apart by how fast it spins, which needs
+        # far more than the 15-27 frames a 30 fps capture gives.
+        [str(adb), "-s", serial, "shell", "screenrecord", "--video-size", "1280x720",
+         "--bit-rate", "20000000", "--time-limit", "16", remote],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )

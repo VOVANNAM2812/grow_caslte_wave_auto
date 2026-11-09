@@ -322,6 +322,47 @@ def correlate(frame, template, center, reach=11):
     return float(scores[row, column]), point
 
 
+class SpinTracker:
+    """Measures how hard each cup spins while the ring is shuffling.
+
+    The cups share one sprite, so the settled frames cannot say which cup holds
+    the diamond. What separates them while they move is rotation: the cup with
+    the diamond spins hardest. The whole ring also turns together, so the shared
+    part is subtracted per frame and only each cup's own deviation is counted;
+    without that the ring's rotation swamps the difference. (The ring turning
+    with the cups is why a whole rotation leaves the picture unchanged.)
+    """
+
+    def __init__(self, reference=None, slots=None):
+        self.cups = [{"slot": slot, "position": np.array(position, dtype=float),
+                      "deviation": 0.0, "previous": None, "seen": 0}
+                     for slot, position in enumerate(slots if slots is not None else SLOTS)]
+
+    def update(self, poses):
+        good = [pose for pose in poses if pose.score >= 0.75]
+        if len(good) < 4:
+            return
+        angles = np.radians([pose.angle for pose in good])
+        ring = float(np.degrees(np.arctan2(np.sin(angles).mean(),
+                                           np.cos(angles).mean())) % 360)
+        for pose in good:
+            cup = min(self.cups, key=lambda cup: pose.distance(cup["position"]))
+            if pose.distance(cup["position"]) > 30:
+                continue
+            deviation = (pose.angle - ring + 180) % 360 - 180
+            if cup["previous"] is not None:
+                cup["deviation"] += abs(deviation - cup["previous"])
+            cup["previous"] = deviation
+            cup["position"] = np.array(pose.position, dtype=float)
+            cup["seen"] += 1
+
+    def ranking(self):
+        """Slots in order of how hard the cup there spun, hardest first."""
+        return [(slots_nearest(cup["position"])[0], cup["deviation"])
+                for cup in sorted((cup for cup in self.cups if cup["seen"] > 2),
+                                  key=lambda cup: -cup["deviation"])]
+
+
 class CupTracker:
     """Follows all eight cups through one shuffle.
 
@@ -458,6 +499,7 @@ class Detector:
         self.frames = []
         self.boards = []
         self.tracker = None
+        self.spinner = None
         self.start_time = 0.0
         self.motion = False
         self.settled_frames = 0
@@ -521,6 +563,7 @@ class Detector:
             self.initial_slot = entry_slot(self.gem_trail)
             self.matcher = PoseMatcher(Image.fromarray(self.reference.astype(np.uint8)))
             self.tracker = CupTracker(self.reference)
+            self.spinner = SpinTracker(self.reference)
         if time - self.start_time > 8:
             return self._finish(time, "cup layout did not settle")
         self.settled_frames = self.settled_frames + 1 if still else 0
@@ -530,7 +573,10 @@ class Detector:
         if (not self.observations or time - self.observations[0].time <= 0.18
                 or time - self.observations[-1].time >= self.sample_interval
                 or self.settled_frames >= 3):
-            self.observations.append(self.matcher.observe(time, gray))
+            observation = self.matcher.observe(time, gray)
+            self.observations.append(observation)
+            if self.spinner is not None:
+                self.spinner.update(observation.poses)
         if self._settled(time):
             return self._finish(time)
         return None
@@ -616,6 +662,13 @@ class Detector:
                         best_slot, best_score = target, score
                 if best_slot is not None:
                     add(best_slot, 1.2 * best_score, "diamond cup matched")
+        # The cup that spins fastest is the one hiding the diamond, so where it
+        # stops is the answer. This is the rule the game actually uses, and it
+        # is the only cue that differs between eight otherwise identical cups.
+        if self.spinner is not None:
+            for slot, spin in self.spinner.ranking()[:3]:
+                if spin > 60:
+                    add(slot, 2.5 * min(spin, 1000) / 1000, "fastest spinning cup")
         mapping = self.tracker.final_slot() if self.tracker else {}
         if self.initial_slot is not None and self.initial_slot in mapping:
             add(mapping[self.initial_slot], 2.0, "tracked cup")

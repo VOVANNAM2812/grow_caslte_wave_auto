@@ -145,6 +145,31 @@ Mỗi lượt lưu lại còn có kèm một file **PDF** cùng tên, gồm các
 
 `captcha.py` tìm cốc ban đầu từ hướng viên kim cương di chuyển, so khớp hình cốc ở nhiều góc để phát hiện cốc xoay nhanh, rồi theo dõi các vị trí qua từng khung hình. Tool chỉ trả về tọa độ khi có đủ khung hình cùng hỗ trợ một vị trí cuối.
 
+### Quy luật xáo cốc: cốc chứa kim cương là cốc xoay nhanh nhất
+
+Đây là điểm quan trọng nhất của CAPTCHA và **không được quên**:
+
+- Các cốc vừa **xoay tại chỗ** vừa **đổi vị trí** trong lúc xáo.
+- Cốc xoay **nhanh nhất** chính là cốc đang giấu viên kim cương.
+- Tám cốc dùng chung một hình nên chỉ nhìn vị trí cuối là không thể biết đáp án. Cách duy nhất là đọc **tốc độ xoay** của từng cốc trong lúc xáo.
+
+Tool đo góc xoay của từng cốc bằng `PoseMatcher` (so khớp hình cốc ở 24 góc, mỗi góc 15°), rồi bám danh tính từng cốc qua các khung để biết cốc nào xoay nhiều nhất và nó dừng ở ô nào.
+
+Đã đối chiếu với đáp án thật của hai lượt do người dùng xác nhận:
+
+| Lượt | Cốc xoay nhanh nhất dừng ở | Đáp án thật | Kết quả |
+|---|---|---|---|
+| `rec_490af` | `left` | `left` | đúng |
+| `video6` | `bottom-right` | `bottom-right` | đúng |
+
+Vì cú xáo chỉ kéo dài khoảng 0,5–0,9 giây, phải ghi **60 khung/giây** thì mới đủ khung để đo góc:
+
+```
+adb shell screenrecord --video-size 1280x720 --bit-rate 20000000 /data/local/tmp/round.mp4
+```
+
+Ở 30 khung/giây chỉ còn khoảng 15–27 khung cho cả cú xáo, không đủ để bám cốc.
+
 Tool xử lý cả hai kiểu xáo cốc của game: kiểu đổi chỗ trái phải và kiểu xoay tròn cả vòng. Kết quả in kèm danh sách `ranked` để bạn biết các cốc dự bị. Bản ghi không ra kết quả vẫn được giữ trong `logs`, và `captcha.py` in các cốc ứng viên thay vì bỏ trống.
 
 ```powershell
