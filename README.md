@@ -61,11 +61,12 @@ Chỉ `--tap` mới gửi thao tác bấm. Mỗi thiết bị ADB có một phi�
 | Tình huống | Hành động |
 | --- | --- |
 | Màn chính | Tool nhận diện các nút từ ảnh mẫu và bấm **Battle** hoặc **Replay** theo chế độ đang chạy. Trong menu Replay, tool chọn ô **100%**. |
-| Đang đánh | Tool nhìn thanh hồi kỹ năng ở các ô hero đã định vị. Khi thanh xanh đầy, tool bấm hero một lần và chờ thanh rời trạng thái đầy trước khi bấm lại ở lần hồi tiếp theo. |
+| Đang đánh | Tool nhìn thanh hồi kỹ năng. Khi thanh xanh đầy, tool bấm đơn vị sở hữu một lần và chờ thanh rời trạng thái đầy trước khi bấm lại ở lần hồi tiếp theo. Tool theo dõi 12 thanh: 9 hero của Lightning Castle, cây thần và hai hàng người tuyết. |
 | Hộp **Wave Skip** | Tool bấm **X** để đóng hộp và tiếp tục đánh. |
 | **Victory** | Tool chờ về màn chính, ưu tiên hộp thưởng vàng nếu đã bật tự xem quảng cáo, rồi tiếp tục theo chế độ hiện tại. |
 | HP lâu đài về **0** | Tool nhận diện số 0 cùng thanh HP cạn, chuyển từ wave sang Replay và giữ Replay đến khi kết thúc phiên chạy. |
-| **CAPTCHA** | Tool tạm dừng đánh. Nếu bật `--auto-captcha`, tool thử chọn một lần. Khi cần giải tay, auto play chờ bạn xử lý rồi tiếp tục. |
+| Wave **BOSS** | Màn boss thay dòng `WAVE n` bằng thanh `BOSS`, nên tool nhận diện trận đấu bằng thanh HP/MP cộng thanh tiến trình hoặc các thanh hồi kỹ năng, và vẫn bấm kỹ năng bình thường. |
+| **CAPTCHA** | Tool tạm dừng đánh. Nếu bật `--auto-captcha`, tool tự bấm **Start**, dò cốc và thử tối đa ba cốc theo thứ tự tin cậy khi game báo sai. Khi cần giải tay, auto play chờ bạn xử lý rồi tiếp tục. |
 | Màn hình chưa nhận diện | Tool chờ. Nếu đang có hộp thoại lạ, hãy tự xử lý để game quay lại màn đã biết. |
 
 Tool lấy ảnh qua ADB, chuẩn hóa ảnh về 1280 × 720 để đối chiếu mẫu, rồi quy đổi tọa độ bấm theo kích thước ảnh thật.
@@ -110,7 +111,7 @@ Khi bật tự xem quảng cáo, tool xử lý như sau.
 1. Sau khi thắng, tool chờ hộp thưởng xuất hiện trước khi đánh tiếp. Tool nhận diện biểu tượng vàng và cả hai cách hiển thị nút **GET**, có hoặc không có dòng đếm ngược, rồi bấm nút một lần.
 2. Nếu cửa sổ quảng cáo đang hiển thị trong LDPlayer, tool tiếp tục theo dõi kể cả khi bạn khởi động giữa lượt xem. Trong lúc đó, tool tạm dừng vào trận, dùng kỹ năng, giải CAPTCHA và nâng tháp.
 3. Tool nhận các mẫu **Reward granted** có dấu **X** liền kề, gồm cả chữ trắng đi kèm dấu X đen trên nút tròn sáng. Tool cũng nhận diện mẫu hai thẻ **Learn More** và thẻ **Watch now** có nút đóng riêng. Một lượt thưởng có thể gồm nhiều màn kết thúc nối tiếp nhau.
-4. Tool bấm **X** khi nhận diện được và thử lại sau ít nhất 1,5 giây nếu nút vẫn hiện. Tool thử tối đa ba lần cho mỗi dạng màn kết thúc, với giới hạn chín lần cho cả lượt nếu quảng cáo có nhiều màn. Nếu cần đóng tay, tool chờ đến khi màn game hiển thị ổn định rồi tiếp tục. Game tự cộng vàng. Log `gold HUD changed` cho biết vùng hiển thị số vàng đã thay đổi sau khi quay về.
+4. Tool bấm **X** khi nhận diện được và thử lại sau ít nhất 1,5 giây nếu nút vẫn hiện. Tool thử tối đa sáu lần cho mỗi dạng màn kết thúc. Nếu quảng cáo đứng yên mà chưa đóng được, tool tự tìm dấu **X** ở cả bốn góc màn hình, không phụ thuộc vị trí hay màu nền, và lần lượt bấm các vị trí tìm thấy. Nhờ vậy nút **X** nằm chỗ khác hoặc có màu nền khác vẫn đóng được. Nếu cần đóng tay, tool chờ đến khi màn game hiển thị ổn định rồi tiếp tục. Game tự cộng vàng. Log `gold HUD changed` cho biết vùng hiển thị số vàng đã thay đổi sau khi quay về.
 
 ### Tự giải CAPTCHA trong auto play
 
@@ -124,15 +125,52 @@ Khi bật tự xem quảng cáo, tool xử lý như sau.
 
 Thêm `--upgrade-tower` vào một trong hai lệnh nếu muốn bật cả nâng tháp.
 
-Tool ưu tiên chụp cửa sổ LDPlayer. Nếu cửa sổ bị che và tool chưa bấm **Start**, nó chuyển sang ghi hình ngắn qua ADB. Tool xác nhận có kim cương giữa bàn cốc trước khi bấm **Start**, rồi đối chiếu lại bàn cốc qua ADB trước khi chọn cốc. Mỗi lần CAPTCHA xuất hiện, tool thử tối đa một lượt. Nếu CAPTCHA còn mở, bạn có thể giải tay và auto play sẽ tiếp tục khi nhận ra màn game đã trở lại. Bỏ `--auto-captcha` để dùng chế độ giải tay.
+Tool chụp cửa sổ LDPlayer khi cửa sổ đang hiện trên màn hình vì cách này cho tốc độ khung hình cao nhất. Cửa sổ bị thu nhỏ hoặc bị che thì tool tự chuyển sang đọc thẳng màn hình máy ảo qua ADB, nên bạn cứ mở tab khác làm việc. Khung hình đen không bao giờ được dùng để đoán: nếu quá nửa lượt là khung đen, tool báo `BLIND`, không bấm cốc nào và nhắc bạn để cửa sổ LDPlayer hiện ra. Tool cũng in tốc độ chụp thật và cảnh báo khi dưới 30 khung/giây vì lúc đó không theo kịp nhịp xáo. Nếu cửa sổ bị che và tool chưa bấm **Start**, nó chuyển sang ghi hình 16 giây qua ADB. Tool xác nhận có kim cương giữa bàn cốc trước khi bấm **Start**, rồi ghi hình trọn lượt xáo cốc. Bản ghi chạy tiếp sau cú bấm đầu tiên, nên khi game báo **Incorrect** tool vẫn đọc được kim cương hiện ra và thử cốc tiếp theo. Tool thử tối đa bốn cốc theo thứ tự tin cậy, bỏ qua thời gian chờ "Try again". Khi lựa chọn không chắc chắn, tool đưa thêm các cốc lân cận làm dự bị vì tám cốc giống hệt nhau nên cả vòng có thể đã lăn sang vị trí kế bên. Sau mỗi cú bấm sai, tool đọc lại các khung hình vừa ghi để tìm lúc game mở cốc và lộ viên kim cương, rồi bấm đúng cốc đó. Nếu lượt đó không ra kết quả, auto play tự thử lại CAPTCHA tối đa ba lượt, mỗi lượt cách nhau bốn giây. Nếu vẫn còn mở, bạn có thể giải tay và auto play sẽ tiếp tục khi nhận ra màn game đã trở lại. Bỏ `--auto-captcha` để dùng chế độ giải tay.
 
 Với máy ảo khác, dùng `--index` để chọn đúng cửa sổ LDPlayer. Nếu đặt `--serial` riêng, chọn serial của cùng máy ảo đó.
 
-Khi tool đã bắt đầu lượt mà chưa gửi được cú chọn cốc, bản ghi được lưu trong `logs` để chạy lại bằng `captcha.py`. Ghi hình ADB lưu clip MP4. Chụp cửa sổ lưu khung hình bàn cốc và thời gian trong file NPZ. Dùng đường dẫn bản ghi xuất hiện trong log làm đối số cho `captcha.py`.
+Khi tool đã bắt đầu lượt mà chưa gửi được cú chọn cốc, bản ghi được lưu trong `logs` để chạy lại bằng `captcha.py`. Chạy `python test_capture.py logs\*.npz` để kiểm tra các bản ghi đó có bị khung đen hay không. Ghi hình ADB lưu clip MP4. Chụp cửa sổ lưu khung hình bàn cốc và thời gian trong file NPZ. Dùng đường dẫn bản ghi xuất hiện trong log làm đối số cho `captcha.py`.
+
+Mỗi lượt lưu lại còn có kèm một file **PDF** cùng tên, gồm các khung hình bàn cốc có ghi thời gian, để bạn gửi lại khi cần báo lỗi. Chat chỉ nhận ảnh, văn bản, JSON và PDF nên không gửi trực tiếp được video hay NPZ; PDF thay thế được cả hai.
+
+```powershell
+# Xuất một lượt bất kỳ ra PDF (MP4 hoặc NPZ đều được)
+.\.venv\Scripts\python.exe captcha_sheet.py logs\growcastle-captcha-<mã>.mp4
+
+# Chỉ lấy đoạn cần xem, dày khung hình hơn
+.\.venv\Scripts\python.exe captcha_sheet.py video1.mp4 --from 11.5 --to 14.0 --step 0.06 --out luot-2.pdf
+```
 
 ### Bộ dò CAPTCHA độc lập
 
 `captcha.py` tìm cốc ban đầu từ hướng viên kim cương di chuyển, so khớp hình cốc ở nhiều góc để phát hiện cốc xoay nhanh, rồi theo dõi các vị trí qua từng khung hình. Tool chỉ trả về tọa độ khi có đủ khung hình cùng hỗ trợ một vị trí cuối.
+
+### Quy luật xáo cốc: cốc chứa kim cương là cốc xoay nhanh nhất
+
+Đây là điểm quan trọng nhất của CAPTCHA và **không được quên**:
+
+- Các cốc vừa **xoay tại chỗ** vừa **đổi vị trí** trong lúc xáo.
+- Cốc xoay **nhanh nhất** chính là cốc đang giấu viên kim cương.
+- Tám cốc dùng chung một hình nên chỉ nhìn vị trí cuối là không thể biết đáp án. Cách duy nhất là đọc **tốc độ xoay** của từng cốc trong lúc xáo.
+
+Tool đo góc xoay của từng cốc bằng `PoseMatcher` (so khớp hình cốc ở 24 góc, mỗi góc 15°), rồi bám danh tính từng cốc qua các khung để biết cốc nào xoay nhiều nhất và nó dừng ở ô nào.
+
+Đã đối chiếu với đáp án thật của hai lượt do người dùng xác nhận:
+
+| Lượt | Cốc xoay nhanh nhất dừng ở | Đáp án thật | Kết quả |
+|---|---|---|---|
+| `rec_490af` | `left` | `left` | đúng |
+| `video6` | `bottom-right` | `bottom-right` | đúng |
+
+Vì cú xáo chỉ kéo dài khoảng 0,5–0,9 giây, phải ghi **60 khung/giây** thì mới đủ khung để đo góc:
+
+```
+adb shell screenrecord --video-size 1280x720 --bit-rate 20000000 /data/local/tmp/round.mp4
+```
+
+Ở 30 khung/giây chỉ còn khoảng 15–27 khung cho cả cú xáo, không đủ để bám cốc.
+
+Tool xử lý cả hai kiểu xáo cốc của game: kiểu đổi chỗ trái phải và kiểu xoay tròn cả vòng. Kết quả in kèm danh sách `ranked` để bạn biết các cốc dự bị. Bản ghi không ra kết quả vẫn được giữ trong `logs`, và `captcha.py` in các cốc ứng viên thay vì bỏ trống.
 
 ```powershell
 # Quan sát CAPTCHA trực tiếp từ cửa sổ LDPlayer số 0
@@ -147,6 +185,7 @@ Khi tool đã bắt đầu lượt mà chưa gửi được cú chọn cốc, b�
 ## 5. Tình trạng kiểm thử
 
 - Đã chạy mô phỏng các quyết định Battle, Replay, kỹ năng và quảng cáo trên `video2.mp4`, và phân tích ba lượt CAPTCHA trên `video1.mp4`.
+- Đã kiểm tra màn boss bằng ảnh chụp thật có thanh tiêu đề cửa sổ: tool nhận ra thanh **BOSS** và tìm đủ tám thanh kỹ năng đã hồi, kể cả khi HUD bị đẩy xuống khoảng hai mươi điểm ảnh. Đã kiểm tra lại ảnh chụp wave 1266 × 723 và hai bản ghi CAPTCHA lỗi trong `logs` (kiểu xoay tròn).
 - Đã kiểm thử trực tiếp trên LDPlayer với **Battle**, **Replay 100%**, kích hoạt lại kỹ năng sau hồi chiêu và nhận vàng từ cả hai mẫu kết thúc quảng cáo.
 - Đã giải một lượt CAPTCHA trực tiếp trên LDPlayer bằng cách phân tích lại các khung hình của lượt vừa chạy rồi bấm cốc dưới cùng. Tạm dừng CAPTCHA trong auto play đã được kiểm tra trên video.
 - Luồng `--auto-captcha` đã được kiểm tra bằng khung hình từ lượt thật và ADB mô phỏng, gồm bấm **Start**, chọn một cốc và tiếp tục Replay sau khi CAPTCHA được giải.
