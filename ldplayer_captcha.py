@@ -47,6 +47,30 @@ def run(executable, *arguments, timeout=8):
                           timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW).stdout
 
 
+class RecordingUnavailable(RuntimeError):
+    """The device refused to record, so measuring the spin is not possible."""
+
+
+def remote_written(adb, serial, remote):
+    """True when the device actually produced a recording file."""
+    try:
+        size = run(adb, "-s", serial, "shell", "stat", "-c", "%s", remote, timeout=3)
+    except (subprocess.CalledProcessError, subprocess.SubprocessError):
+        return False
+    return size.strip().isdigit() and int(size) > 0
+
+
+def screenrecord_help(adb, serial):
+    """Usage text of screenrecord, or an empty string when it cannot run."""
+    for arguments in (["--help"], []):
+        try:
+            return run(adb, "-s", serial, "shell", "screenrecord", *arguments,
+                       timeout=6).decode(errors="replace")
+        except (subprocess.CalledProcessError, subprocess.SubprocessError):
+            continue
+    return ""
+
+
 def window_handle(console, index):
     output = run(console, "list2").decode(errors="replace")
     for line in output.splitlines():
@@ -336,47 +360,75 @@ def solve_from_adb_recording(adb, serial, start_screen):
     remote = f"/data/local/tmp/growcastle-captcha-{uuid4().hex}.mp4"
     # The device framebuffer is recorded, so the result does not depend on the
     # LDPlayer window being visible while the round runs.
+    # Record at the display's own resolution. Passing a size is avoided on
+    # purpose: the flag was renamed from --size to --video-size between Android
+    # releases, and a wrong name makes screenrecord exit before writing a frame,
+    # which is what "did not start" meant. The native size is always accepted.
+    usage = screenrecord_help(adb, serial)
+    if not usage:
+        raise RecordingUnavailable("this Android build has no screenrecord.")
+    if "--video-size" in usage or "--size" in usage:
+        size_flag = "--video-size" if "--video-size" in usage else "--size"
+        command = [str(adb), "-s", serial, "shell", "screenrecord", size_flag, "1280x720"]
+    else:
+        command = [str(adb), "-s", serial, "shell", "screenrecord"]
     recording = subprocess.Popen(
         # 60 frames a second: the shuffle lasts under a second and the cup
         # holding the diamond is told apart by how fast it spins, which needs
         # far more than the 15-27 frames a 30 fps capture gives.
-        [str(adb), "-s", serial, "shell", "screenrecord", "--video-size", "1280x720",
-         "--bit-rate", "20000000", "--time-limit", "16", remote],
+        command + ["--bit-rate", "20000000", "--time-limit", "16", remote],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     local = None
     selected = False
     try:
-        deadline = monotonic() + 2
-        while recording.poll() is None and monotonic() < deadline:
+        deadline = monotonic() + 4
+        written = False
+        while monotonic() < deadline:
+            if recording.poll() is not None:
+                break
             try:
                 size = run(adb, "-s", serial, "shell", "stat", "-c", "%s", remote, timeout=2)
                 if size.strip().isdigit() and int(size) > 0:
+                    written = True
                     break
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.SubprocessError):
                 pass
             sleep(0.1)
-        else:
-            raise RuntimeError("ADB screen recording did not start.")
+        if not written:
+            if recording.poll() is None:
+                recording.kill()
+            _, error = recording.communicate()
+            detail = (error or b"").decode(errors="replace").strip().splitlines()
+            raise RecordingUnavailable(
+                "ADB screen recording did not start"
+                + (f": {detail[0]}" if detail else "."))
 
         frame, gem = matching_game_frame(adb, serial, initial_board)
         verify_start(frame, gem, start_screen)
         if recording.poll() is not None:
-            raise RuntimeError("ADB screen recording ended before CAPTCHA Start.")
+            raise RecordingUnavailable(
+                "ADB screen recording ended before the round started.")
         tap_point(adb, serial, frame, START_POINT)
         started = monotonic()
         print("CAPTCHA: started during ADB screen recording.", flush=True)
         _, stderr = recording.communicate(timeout=18)
-        if recording.returncode:
-            raise RuntimeError(stderr.decode(errors="replace").strip() or "ADB screen recording failed.")
+        if recording.returncode and not remote_written(adb, serial, remote):
+            raise RecordingUnavailable(
+                stderr.decode(errors="replace").strip() or "ADB screen recording failed.")
 
         data = run(adb, "-s", serial, "exec-out", "cat", remote)
         with NamedTemporaryFile(suffix=".mp4", delete=False) as target:
             local = Path(target.name)
             target.write(data)
         detector = Detector(sample_interval=0.017)
-        video = read_video(local)
+        try:
+            video = read_video(local)
+        except Exception as exc:
+            # A recording that cannot be decoded is as useless as none at all,
+            # so the caller falls back rather than failing the whole round.
+            raise RecordingUnavailable(f"the recording could not be read: {exc}")
         try:
             for _, time, image in video:
                 board = board_image(image)
@@ -477,7 +529,22 @@ def watch(console, index, serial, duration, tap, start_screen=None):
     # follow along and to confirm the panel, not as the measuring instrument.
     if start_screen is not None:
         print("CAPTCHA: recording at 60 frames/s through ADB.", flush=True)
-        return solve_from_adb_recording(adb, serial, start_screen)
+        try:
+            return solve_from_adb_recording(adb, serial, start_screen)
+        except RecordingUnavailable as exc:
+            # A device that cannot record still has cups on screen. Following
+            # them from the window give a worse measurement of the spin, but a
+            # wrong guess is better than refusing every round.
+            print(f"CAPTCHA: {exc} Falling back to window capture; the spin rule "
+                  f"needs a recording to be reliable.", flush=True)
+
+    if hwnd is None and sys.platform == "win32":
+        try:
+            hwnd = window_handle(console, index)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            hwnd = None
+    if hwnd is None and tap:
+        raise RuntimeError("Neither ADB screen recording nor the LDPlayer window is available.")
 
     detector = Detector(sample_interval=0.043)
     # Keep a complete short shuffle available even while pose analysis lags.

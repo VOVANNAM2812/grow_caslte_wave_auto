@@ -162,13 +162,9 @@ Tool đo góc xoay của từng cốc bằng `PoseMatcher` (so khớp hình cố
 | `rec_490af` | `left` | `left` | đúng |
 | `video6` | `bottom-right` | `bottom-right` | đúng |
 
-Vì cú xáo chỉ kéo dài khoảng 0,5–0,9 giây, phải ghi **60 khung/giây** thì mới đủ khung để đo góc:
+Vì cú xáo chỉ kéo dài khoảng 0,5–0,9 giây, phải ghi **60 khung/giây** thì mới đủ khung để đo góc. Ở 30 khung/giây chỉ còn khoảng 15–27 khung cho cả cú xáo, không đủ để bám cốc. Vì vậy mọi lượt giải tự động đều chạy qua bản ghi ADB 60 khung/giây, kể cả khi cửa sổ LDPlayer đang hiện.
 
-```
-adb shell screenrecord --video-size 1280x720 --bit-rate 20000000 /data/local/tmp/round.mp4
-```
-
-Ở 30 khung/giây chỉ còn khoảng 15–27 khung cho cả cú xáo, không đủ để bám cốc.
+Tool tự dò bản `screenrecord` của máy ảo để chọn đúng tên tham số kích thước: Android cũ dùng `--size`, Android mới dùng `--video-size`. Truyền sai tên thì `screenrecord` thoát ngay và không ghi được khung nào. Nếu máy ảo không ghi hình được, tool quay lại chụp cửa sổ và nói rõ trong log rằng quy luật xoay lúc đó không đáng tin.
 
 Tool xử lý cả hai kiểu xáo cốc của game: kiểu đổi chỗ trái phải và kiểu xoay tròn cả vòng. Kết quả in kèm danh sách `ranked` để bạn biết các cốc dự bị. Bản ghi không ra kết quả vẫn được giữ trong `logs`, và `captcha.py` in các cốc ứng viên thay vì bỏ trống.
 
