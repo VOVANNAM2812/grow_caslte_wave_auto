@@ -160,7 +160,7 @@ Tool xử lý cả hai kiểu xáo cốc của game: kiểu đổi chỗ trái p
 ## 5. Tình trạng kiểm thử
 
 - Đã chạy mô phỏng các quyết định Battle, Replay, kỹ năng và quảng cáo trên `video2.mp4`, và phân tích ba lượt CAPTCHA trên `video1.mp4`.
-- Đã kiểm tra màn boss bằng ảnh chụp thật: tool nhận ra trận boss và bấm kỹ năng. Đã kiểm tra lại ảnh chụp wave 1266 × 723 và hai bản ghi CAPTCHA lỗi trong `logs` (kiểu xoay tròn).
+- Đã kiểm tra màn boss bằng ảnh chụp thật có thanh tiêu đề cửa sổ: tool nhận ra thanh **BOSS** và tìm đủ tám thanh kỹ năng đã hồi, kể cả khi HUD bị đẩy xuống khoảng hai mươi điểm ảnh. Đã kiểm tra lại ảnh chụp wave 1266 × 723 và hai bản ghi CAPTCHA lỗi trong `logs` (kiểu xoay tròn).
 - Đã kiểm thử trực tiếp trên LDPlayer với **Battle**, **Replay 100%**, kích hoạt lại kỹ năng sau hồi chiêu và nhận vàng từ cả hai mẫu kết thúc quảng cáo.
 - Đã giải một lượt CAPTCHA trực tiếp trên LDPlayer bằng cách phân tích lại các khung hình của lượt vừa chạy rồi bấm cốc dưới cùng. Tạm dừng CAPTCHA trong auto play đã được kiểm tra trên video.
 - Luồng `--auto-captcha` đã được kiểm tra bằng khung hình từ lượt thật và ADB mô phỏng, gồm bấm **Start**, chọn một cốc và tiếp tục Replay sau khi CAPTCHA được giải.
