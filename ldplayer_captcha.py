@@ -36,6 +36,9 @@ class BITMAPINFOHEADER(ct.Structure):
 
 START_POINT = (925, 580)
 CAPTURE_FPS = 58
+# Recording size. Small enough for the encoder to keep up with the shuffle,
+# large enough that the cup ring survives the resample to 215x210.
+RECORD_SIZE = "960x540"
 # A frame this dark holds no cups; it is a hidden window, not a view of the game.
 BLACK_FRAME = 0.5
 # How long a grab that cannot see the window waits before trying again.
@@ -49,6 +52,24 @@ def run(executable, *arguments, timeout=8):
 
 class RecordingUnavailable(RuntimeError):
     """The device refused to record, so measuring the spin is not possible."""
+
+
+def describe_rate(frames, seconds):
+    """Frames per second of a recording, for the log."""
+    if seconds <= 0:
+        return "unknown"
+    return f"{frames / seconds:.0f}"
+
+
+def round_rate(frames, duration):
+    """Frames the shuffle actually got, not frames in the whole clip.
+
+    A capture that only samples the shuffle ten times cannot show how a cup
+    turns, so this is the number that decides whether the spin rule can work.
+    """
+    if duration <= 0:
+        return 0
+    return int(frames / duration * 0.9)
 
 
 def remote_written(adb, serial, remote):
@@ -375,10 +396,15 @@ def solve_from_adb_recording(adb, serial, start_screen):
     remote = f"/data/local/tmp/growcastle-captcha-{uuid4().hex}.mp4"
     # The device framebuffer is recorded, so the result does not depend on the
     # LDPlayer window being visible while the round runs.
-    # Record at the display's own resolution. Passing a size is avoided on
-    # purpose: the flag was renamed from --size to --video-size between Android
-    # releases, and a wrong name makes screenrecord exit before writing a frame,
-    # which is what "did not start" meant. The native size is always accepted.
+    # The flag was renamed from --size to --video-size between Android releases,
+    # and a name the build does not know makes screenrecord exit before writing
+    # a frame. Ask the device which one it lists.
+    #
+    # There is no frames-per-second option in screenrecord at all, so the rate
+    # comes from what the AVC encoder manages. A smaller frame is encoded
+    # faster, which is the only lever available: RECORD_SIZE is deliberately
+    # below the display size because the cup ring is resampled to 215x210 for
+    # analysis, where the extra pixels buy nothing.
     usage = screenrecord_usage(adb, serial)
     if not usage:
         raise RecordingUnavailable(
@@ -387,13 +413,13 @@ def solve_from_adb_recording(adb, serial, start_screen):
                or "binary not found") + ")")
     if "--video-size" in usage or "--size" in usage:
         size_flag = "--video-size" if "--video-size" in usage else "--size"
-        command = [str(adb), "-s", serial, "shell", "screenrecord", size_flag, "1280x720"]
+        command = [str(adb), "-s", serial, "shell", "screenrecord",
+                   size_flag, RECORD_SIZE]
     else:
         command = [str(adb), "-s", serial, "shell", "screenrecord"]
     recording = subprocess.Popen(
-        # 60 frames a second: the shuffle lasts under a second and the cup
-        # holding the diamond is told apart by how fast it spins, which needs
-        # far more than the 15-27 frames a 30 fps capture gives.
+        # The shuffle lasts under a second and the cup holding the diamond is
+        # told apart by how fast it spins, so every extra frame counts.
         command + ["--bit-rate", "20000000", "--time-limit", "16", remote],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW,
@@ -447,12 +473,23 @@ def solve_from_adb_recording(adb, serial, start_screen):
             # A recording that cannot be decoded is as useless as none at all,
             # so the caller falls back rather than failing the whole round.
             raise RecordingUnavailable(f"the recording could not be read: {exc}")
+        seen = 0
+        last_time = 0.0
         try:
             for _, time, image in video:
+                seen += 1
+                last_time = time
                 board = board_image(image)
                 result = detector.feed_board(time, board)
                 if result is None:
                     continue
+                print(f"CAPTCHA: recording held {seen} frames over {last_time:.2f}s "
+                      f"({describe_rate(seen, last_time)} frames/s).", flush=True)
+                shuffle_frames = round_rate(seen, last_time)
+                if shuffle_frames < 25:
+                    print(f"CAPTCHA: only about {shuffle_frames} of those frames fall in "
+                          f"the shuffle; the spin rule wants 25 or more, so this guess "
+                          f"is weak.", flush=True)
                 print(f"Round 1: {format_result(result)}", flush=True)
                 if select_candidates(adb, serial, result) is not None:
                     selected = True

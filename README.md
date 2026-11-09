@@ -155,14 +155,19 @@ Mỗi lượt lưu lại còn có kèm một file **PDF** cùng tên, gồm các
 
 Tool đo góc xoay của từng cốc bằng `PoseMatcher` (so khớp hình cốc ở 24 góc, mỗi góc 15°), rồi bám danh tính từng cốc qua các khung để biết cốc nào xoay nhiều nhất và nó dừng ở ô nào.
 
-Đã đối chiếu với đáp án thật của hai lượt do người dùng xác nhận:
+Đã đối chiếu với đáp án thật do người dùng xác nhận. Kết quả **chưa đủ tốt**, ghi lại đúng như đo được:
 
-| Lượt | Cốc xoay nhanh nhất dừng ở | Đáp án thật | Kết quả |
-|---|---|---|---|
-| `rec_490af` | `left` | `left` | đúng |
-| `video6` | `bottom-right` | `bottom-right` | đúng |
+| Lượt | Nguồn | Khung trong cú xáo | Đáp án thật | Hạng tool chọn |
+|---|---|---|---|---|
+| `rec_490af` | chụp cửa sổ 26 khung/giây | 14 | `left` | **#1** đúng |
+| `rec_3ec` | chụp cửa sổ 26 khung/giây | 14 | `bottom` | **#2** lệch một nấc |
+| `video6` | bản ghi 8 khung/giây | 4 | `bottom-right` | **#7** sai |
 
-Vì cú xáo chỉ kéo dài khoảng 0,5–0,9 giây, phải ghi **60 khung/giây** thì mới đủ khung để đo góc. Ở 30 khung/giây chỉ còn khoảng 15–27 khung cho cả cú xáo, không đủ để bám cốc. Vì vậy mọi lượt giải tự động đều chạy qua bản ghi ADB 60 khung/giây, kể cả khi cửa sổ LDPlayer đang hiện.
+Cả ba lượt đều **chưa** chạy trên dữ liệu 60 khung/giây, nên quy luật xoay chưa từng được kiểm chứng ở điều kiện nó cần.
+
+**Giới hạn của `screenrecord`:** bản trên Android 9 (`screenrecord v1.2`) chỉ có `--size`, `--bit-rate`, `--time-limit`, `--bugreport`, `--verbose`. **Không có tham số chọn khung hình/giây.** Vì vậy không thể ép 60 khung/giây bằng tham số dòng lệnh; chỉ có thể chọn kích thước và bitrate rồi đo tốc độ thật.
+
+Để có nhiều khung hơn cho cú xáo, hãy thử hạ kích thước xuống `--size 960x540` hoặc `640x360`: bộ mã hoá AVC thường chạy nhanh hơn ở độ phân giải thấp. Bản ghi vẫn đủ rõ vì bàn cốc chỉ chiếm vùng nhỏ rồi được thu về 215 × 210. Tool in tốc độ thật và số khung rơi vào cú xáo sau mỗi lượt để biết ngay có đủ hay không.
 
 Tool tự dò bản `screenrecord` của máy ảo để chọn đúng tên tham số kích thước: Android cũ dùng `--size`, Android mới dùng `--video-size`. Truyền sai tên thì `screenrecord` thoát ngay và không ghi được khung nào. Nếu máy ảo không ghi hình được, tool quay lại chụp cửa sổ và nói rõ trong log rằng quy luật xoay lúc đó không đáng tin.
 
