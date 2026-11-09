@@ -24,6 +24,16 @@ from captcha_sheet import build as build_sheet
 from windows_video import read_video
 
 
+
+class BITMAPINFOHEADER(ct.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD)]
+
+
 START_POINT = (925, 580)
 CAPTURE_FPS = 58
 # A frame this dark holds no cups; it is a hidden window, not a view of the game.
@@ -68,6 +78,44 @@ def window_box(hwnd):
     return origin.x, origin.y, origin.x + bounds.right, origin.y + bounds.bottom
 
 
+def blt_box(box):
+    """Copy just `box` of the desktop into an image with BitBlt.
+
+    `ImageGrab.grab` always captures the whole desktop and then crops, which
+    costs about 50 ms a frame on a 1080p screen. Copying only the game area
+    with BitBlt is several times faster, and the shuffle lasts under a second,
+    so the extra frames are what make the cups followable.
+    """
+    x, y, right, bottom = box
+    width, height = right - x, bottom - y
+    screen = ct.windll.user32.GetDC(0)
+    if not screen:
+        return None
+    memory = ct.windll.gdi32.CreateCompatibleDC(screen)
+    bitmap = ct.windll.gdi32.CreateCompatibleBitmap(screen, width, height)
+    try:
+        ct.windll.gdi32.SelectObject(memory, bitmap)
+        if not ct.windll.gdi32.BitBlt(memory, 0, 0, width, height, screen, x, y, 0x00CC0020):
+            return None
+        header = BITMAPINFOHEADER()
+        header.biSize = ct.sizeof(BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height            # negative: rows top down
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = 0             # BI_RGB
+        buffer = ct.create_string_buffer(width * height * 4)
+        if not ct.windll.gdi32.GetDIBits(memory, bitmap, 0, height, buffer,
+                                         ct.byref(header), 0):
+            return None
+        # frombytes copies, so the bitmap buffer can be released straight away.
+        return Image.frombytes("RGB", (width, height), buffer.raw, "raw", "BGRX", 0, 1)
+    finally:
+        ct.windll.gdi32.DeleteObject(bitmap)
+        ct.windll.gdi32.DeleteDC(memory)
+        ct.windll.user32.ReleaseDC(0, screen)
+
+
 def grab_game_window(hwnd):
     """Desktop grab of the LDPlayer client area.
 
@@ -78,7 +126,9 @@ def grab_game_window(hwnd):
     box = window_box(hwnd)
     if box is None:
         return None
-    image = ImageGrab.grab(bbox=box, all_screens=True)
+    image = blt_box(box)
+    if image is None:
+        image = ImageGrab.grab(bbox=box, all_screens=True)
     if dark_share(image) >= BLACK_FRAME:
         return None
     return image

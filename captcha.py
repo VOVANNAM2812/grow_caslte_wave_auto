@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from PIL import Image
 
 from windows_video import read_video
@@ -295,25 +296,30 @@ def cup_patch(gray, center):
 
 
 def correlate(frame, template, center, reach=11):
-    """Best normalized cross-correlation of a patch near a predicted point."""
+    """Best normalized cross-correlation of a patch near a predicted point.
+
+    Every step is vectorised: the shuffle lasts under a second, so a tracker
+    that costs milliseconds per cup leaves the capture thread with too few
+    frames to follow the cups between.
+    """
     template = template - template.mean()
     denominator = float(np.sqrt((template ** 2).sum())) + 1e-6
     height, width = frame.shape
-    best_score, best_point = -1.0, None
     cx, cy = int(round(center[0])), int(round(center[1]))
-    for dy in range(-reach, reach + 1, 2):
-        for dx in range(-reach, reach + 1, 2):
-            x, y = cx + dx, cy + dy
-            if x < PATCH_RADIUS or y < PATCH_RADIUS or x + PATCH_RADIUS >= width \
-                    or y + PATCH_RADIUS >= height:
-                continue
-            candidate = frame[y - PATCH_RADIUS:y + PATCH_RADIUS + 1,
-                              x - PATCH_RADIUS:x + PATCH_RADIUS + 1]
-            candidate = candidate - candidate.mean()
-            score = float((template * candidate).sum() / (denominator * (np.sqrt((candidate ** 2).sum()) + 1e-6)))
-            if score > best_score:
-                best_score, best_point = score, np.array([x, y], dtype=float)
-    return best_score, best_point
+    pad = PATCH_RADIUS
+    y0, y1 = cy - reach - pad, cy + reach + pad + 1
+    x0, x1 = cx - reach - pad, cx + reach + pad + 1
+    if y0 < 0 or x0 < 0 or y1 > height or x1 > width:
+        return -1.0, None
+    window = frame[y0:y1, x0:x1]
+    patches = sliding_window_view(window, (PATCH_SIZE, PATCH_SIZE))[::2, ::2]
+    patches = patches - patches.mean(axis=(-2, -1), keepdims=True)
+    numerator = (patches * template).sum(axis=(-2, -1))
+    norm = np.sqrt((patches ** 2).sum(axis=(-2, -1))) + 1e-6
+    scores = numerator / (denominator * norm)
+    row, column = np.unravel_index(scores.argmax(), scores.shape)
+    point = np.array([x0 + column * 2 + pad, y0 + row * 2 + pad], dtype=float)
+    return float(scores[row, column]), point
 
 
 class CupTracker:
