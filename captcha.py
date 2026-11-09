@@ -46,6 +46,17 @@ def gray_of(image):
     return np.asarray(image, dtype=np.float32)
 
 
+def dark_share(image):
+    """Share of the picture that is near black.
+
+    A hardware-rendered LDPlayer window grabbed while it is behind another
+    window comes back as a black rectangle. Those frames hold no cups at all,
+    so this is how the capture and the detector tell them apart from a real
+    view of the game.
+    """
+    return float((gray_of(image) < 20).mean())
+
+
 def gem_position(image):
     colors = np.asarray(image, dtype=np.int16)
     red, green, blue = colors[:, :, :3].transpose(2, 0, 1)
@@ -373,6 +384,12 @@ class Result:
     confirmations: int
     reason: str = ""
     ranked: tuple = ()
+    dark_share: float = 0.0
+    unseen: bool = False
+
+    def blind(self):
+        """True when the cups were never really seen, so no guess is offered."""
+        return self.unseen or self.dark_share >= 0.5
 
     def candidates(self):
         """Final slots in confidence order, including the reported one.
@@ -441,11 +458,30 @@ class Detector:
         self.initial_slot = None
         self.last_gem_slot = None
         self.last_gem_angle = None
+        self.dark_frames = 0
+        self.total_frames = 0
+        self.dark_since = None
 
     def feed(self, time, frame):
         return self.feed_board(time, board_image(frame))
 
     def feed_board(self, time, board):
+        # A hidden LDPlayer window hands back a black rectangle. Its cups are
+        # invisible, so feeding it would only add noise: the ring looks like it
+        # stopped and the vote is decided on nothing.
+        dark = dark_share(board)
+        self.dark_frames += dark >= 0.5
+        self.total_frames += 1
+        if dark >= 0.5:
+            if self.dark_since is None:
+                self.dark_since = time
+            # A window that has been black for half a second is gone, not
+            # blinking. Without this the round waits forever for a shuffle it
+            # can no longer see, which is the stall the player sees.
+            if self.reference is not None and time - self.dark_since >= 0.5:
+                return self._finish(time, "the game window went black mid-round", blind=True)
+            return None
+        self.dark_since = None
         gray = gray_of(board)
         gem = gem_position(board)
         still = upright_layout(gray)
@@ -493,11 +529,24 @@ class Detector:
             return self._finish(time)
         return None
 
-    def _finish(self, time, reason=""):
+    def _finish(self, time, reason="", blind=None):
         entry = self.initial_slot if self.initial_slot is not None else self.last_gem_slot
         if entry is None and self.last_gem_angle is not None:
             gaps = np.abs((SLOT_ANGLE - self.last_gem_angle + 180) % 360 - 180)
             entry = int(np.argmin(gaps))
+        dark = self.dark_frames / self.total_frames if self.total_frames else 0.0
+        if blind is None:
+            blind = dark >= 0.5
+        if blind:
+            # More than half the round was a black rectangle, so the cups were
+            # never actually seen. Any guess would be a coin flip dressed up as
+            # evidence, and a wrong tap costs the player an attempt.
+            result = Result(self.observations[0].time if self.observations else self.start_time,
+                            time, entry, None, 0,
+                            f"{dark:.0%} of the round was a black frame, so the cups "
+                            f"were never seen", (), round(dark, 2), True)
+            self.reset()
+            return result
         final, support, ranked = self._decide()
         if reason:
             final, support = None, 0
@@ -636,6 +685,9 @@ def select_final(observations, initial_slot, end_time):
 def format_result(result):
     start = SLOT_NAMES[result.initial_slot] if result.initial_slot is not None else "unknown"
     line = f"{result.start_time:6.2f}s - {result.end_time:6.2f}s  entry={start}"
+    if result.blind():
+        return (f"{line}  BLIND ({result.dark_share:.0%} black frames) - "
+                f"no guess made; keep the LDPlayer window visible")
     if result.final_slot is None:
         detail = result.reason or "no selection"
         if result.ranked:

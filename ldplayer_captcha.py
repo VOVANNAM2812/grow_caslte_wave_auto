@@ -18,14 +18,18 @@ from uuid import uuid4
 import numpy as np
 from PIL import Image, ImageGrab
 
-from captcha import (CENTER, Detector, SLOT_NAMES, VIEWPORT, board_image, format_result,
-                     gem_position, upright_layout)
+from captcha import (CENTER, Detector, SLOT_NAMES, VIEWPORT, board_image, dark_share,
+                     format_result, gem_position, upright_layout)
 from captcha_sheet import build as build_sheet
 from windows_video import read_video
 
 
 START_POINT = (925, 580)
-CAPTURE_FPS = 36
+CAPTURE_FPS = 58
+# A frame this dark holds no cups; it is a hidden window, not a view of the game.
+BLACK_FRAME = 0.5
+# How long a grab that cannot see the window waits before trying again.
+CAPTURE_RETRY = 0.05
 
 
 def run(executable, *arguments, timeout=8):
@@ -45,37 +49,107 @@ def window_handle(console, index):
     raise RuntimeError(f"LDPlayer instance {index} has no running game window.")
 
 
-def grab_game_window(hwnd):
+def window_box(hwnd):
+    """Screen rectangle of the game client area, or None when it is not usable.
+
+    LDPlayer draws the game with the GPU, so only a desktop grab of the area it
+    occupies shows the cups. A window grab returns a black rectangle, and a
+    minimised window occupies no area at all.
+    """
     user32 = ct.windll.user32
-    if user32.GetAncestor(hwnd, 2) == user32.GetForegroundWindow():
-        # A foreground desktop grab includes LDPlayer's hardware-rendered game,
-        # which a direct window grab can return as a black rectangle.
-        origin, bounds = wintypes.POINT(), wintypes.RECT()
-        if (user32.ClientToScreen(hwnd, ct.byref(origin))
-                and user32.GetClientRect(hwnd, ct.byref(bounds))
-                and bounds.right > 0 and bounds.bottom > 0):
-            return ImageGrab.grab(bbox=(origin.x, origin.y, origin.x + bounds.right,
-                                        origin.y + bounds.bottom), all_screens=True)
-    return ImageGrab.grab(window=hwnd)
+    if user32.IsIconic(hwnd):
+        return None
+    origin, bounds = wintypes.POINT(), wintypes.RECT()
+    if not (user32.ClientToScreen(hwnd, ct.byref(origin))
+            and user32.GetClientRect(hwnd, ct.byref(bounds))):
+        return None
+    if bounds.right < 320 or bounds.bottom < 180:
+        return None
+    return origin.x, origin.y, origin.x + bounds.right, origin.y + bounds.bottom
 
 
-def capture_frames(hwnd, frames, stop, start):
+def grab_game_window(hwnd):
+    """Desktop grab of the LDPlayer client area.
+
+    Returns None instead of a black rectangle: grabbing with the window handle
+    cannot see a hardware-rendered surface, and quietly returning the black
+    result is how a whole round gets analysed on pictures of nothing.
+    """
+    box = window_box(hwnd)
+    if box is None:
+        return None
+    image = ImageGrab.grab(bbox=box, all_screens=True)
+    if dark_share(image) >= BLACK_FRAME:
+        return None
+    return image
+
+
+def grab_device(adb, serial):
+    """Screenshot straight from the emulated framebuffer.
+
+    This keeps working while LDPlayer is minimised or behind another window,
+    because nothing about it depends on the window being on screen. It is
+    slower than a desktop grab, so it is the fallback rather than the norm.
+    """
+    screenshot = run(adb, "-s", serial, "exec-out", "screencap", "-p", timeout=6)
+    with Image.open(BytesIO(screenshot)) as screen:
+        return screen.convert("RGB")
+
+
+def capture_frames(frames, stop, start, adb, serial, hwnd=None):
+    """Feed timestamped board crops, switching source with the window.
+
+    A desktop grab is used while LDPlayer is visible on screen because it runs
+    at a much higher rate. As soon as the window is minimised, behind another
+    window, or grabbed as black, frames come from ADB instead, so the round is
+    never recorded as a rectangle of nothing.
+    """
+    source = "window" if hwnd else "adb"
+    seen = 0
+    began = monotonic()
+    announced = None
     try:
         while not stop.is_set():
             timestamp = monotonic() - start
-            if not ct.windll.user32.IsWindow(hwnd):
+            if hwnd is not None and not ct.windll.user32.IsWindow(hwnd):
                 raise RuntimeError("LDPlayer's game window closed.")
-            with grab_game_window(hwnd) as image:
+            image = grab_game_window(hwnd) if source == "window" else None
+            if image is None:
+                # The window cannot be seen: read the device itself instead.
+                source = "adb"
+                image = grab_device(adb, serial)
+                if dark_share(image) >= BLACK_FRAME:
+                    raise RuntimeError("ADB returned a black screen; is the game running?")
+            else:
+                source = "window"
+            if source != announced:
+                print(f"CAPTCHA: capturing from "
+                      f"{'the LDPlayer window' if source == 'window' else 'ADB (window hidden)'}.",
+                      flush=True)
+                announced = source
+            seen += 1
+            with image:
                 frames.put_nowait((timestamp, board_image(image)))
-            # Leave room for LDPlayer to render on fast capture hosts.
-            stop.wait(max(0, start + timestamp + 1 / CAPTURE_FPS - monotonic()))
+            if source == "window":
+                # Leave room for LDPlayer to render on fast capture hosts.
+                stop.wait(max(0, start + timestamp + 1 / CAPTURE_FPS - monotonic()))
+            else:
+                stop.wait(CAPTURE_RETRY)
     except Full:
         stop.set()
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         try:
             frames.put_nowait(exc)
         except Full:
             stop.set()
+    finally:
+        elapsed = monotonic() - began
+        if elapsed > 0 and seen:
+            rate = seen / elapsed
+            print(f"CAPTCHA: capture ran at {rate:.0f} frames/s from {source}.", flush=True)
+            if rate < 30:
+                print("CAPTCHA: that is too slow to follow the shuffle; keep the "
+                      "LDPlayer window visible for a full-rate capture.", flush=True)
 
 
 def game_frame(adb, serial):
@@ -210,6 +284,8 @@ def solve_from_adb_recording(adb, serial, start_screen):
     initial_board = board_image(initial)
     verify_start(initial, gem_position(initial_board), start_screen)
     remote = f"/data/local/tmp/growcastle-captcha-{uuid4().hex}.mp4"
+    # The device framebuffer is recorded, so the result does not depend on the
+    # LDPlayer window being visible while the round runs.
     recording = subprocess.Popen(
         [str(adb), "-s", serial, "shell", "screenrecord", "--size", "960x540",
          "--time-limit", "16", remote],
@@ -326,16 +402,17 @@ def keep_window_round(frames):
 def watch(console, index, serial, duration, tap, start_screen=None):
     if start_screen is not None and not tap:
         raise ValueError("Automatic CAPTCHA start requires tap mode.")
-    # Only Windows has a window capture path; elsewhere ADB recording is enough.
+    # A desktop grab is the fast path and only exists on Windows. Without it
+    # capture still runs, straight from the device over ADB.
     hwnd = None
     if sys.platform == "win32":
         ct.windll.user32.SetProcessDPIAware()
         try:
             hwnd = window_handle(console, index)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-            print(f"CAPTCHA: no window capture ({exc}); using ADB screen recording.", flush=True)
-    else:
-        hwnd = None
+            print(f"CAPTCHA: no window handle ({exc}); capturing from ADB only.", flush=True)
+    if not tap and hwnd is None:
+        raise RuntimeError("Preview mode needs the LDPlayer window; add --tap for ADB capture.")
     adb = console.with_name("adb.exe")
     if tap:
         if run(adb, "-s", serial, "get-state").strip() != b"device":
@@ -346,17 +423,19 @@ def watch(console, index, serial, duration, tap, start_screen=None):
     frames = Queue(maxsize=CAPTURE_FPS * 5)
     stop = Event()
     start = monotonic()
-    capture = Thread(target=capture_frames, args=(hwnd, frames, stop, start), daemon=True) if hwnd else None
+    # ADB is always available as a source, so capture never depends on the
+    # LDPlayer window staying visible: it is only the faster of the two.
+    capture = Thread(target=capture_frames, args=(frames, stop, start, adb, serial, hwnd),
+                     daemon=True)
     print(f"Watching LDPlayer instance {index} ({'one tap enabled' if tap else 'preview only'}).",
           flush=True)
-    if capture is not None:
-        capture.start()
+    capture.start()
     rounds = 0
     started = False
     selected = False
     round_frames = []
     try:
-        while capture is not None and (not duration or monotonic() - start < duration):
+        while not duration or monotonic() - start < duration:
             if start_screen is not None and not started and monotonic() - start >= 1.25:
                 break
             if stop.is_set():
@@ -383,6 +462,15 @@ def watch(console, index, serial, duration, tap, start_screen=None):
             if result is not None:
                 rounds += 1
                 print(f"Round {rounds}: {format_result(result)}", flush=True)
+                if result.blind():
+                    # Nothing was seen, so there is nothing to tap: guessing
+                    # here would only spend one of the player's attempts.
+                    if start_screen is not None:
+                        return False
+                    raise RuntimeError(
+                        "The CAPTCHA round was recorded as black frames. Keep the "
+                        "LDPlayer window visible on screen, or run with --tap so "
+                        "frames can come from ADB.")
                 if tap and (result.coordinate is not None or result.candidates()):
                     if monotonic() - start - result.end_time > 4:
                         raise RuntimeError("Prediction is stale. Run the detector again.")
@@ -417,8 +505,7 @@ def watch(console, index, serial, duration, tap, start_screen=None):
                     return False
     finally:
         stop.set()
-        if capture is not None:
-            capture.join(timeout=2)
+        capture.join(timeout=2)
         if round_frames and not selected:
             keep_window_round(round_frames)
     if start_screen is not None and not started and (not duration or duration >= 12):
