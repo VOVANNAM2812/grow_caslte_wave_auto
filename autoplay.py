@@ -49,12 +49,28 @@ TEMPLATES = {
     "ad_sheet_cta": ((958, 535, 1162, 589), 16),
 }
 GOLD_HUD = (36, 4, 194, 39)
-SKILLS = tuple((x, bar_y, hero_y) for bar_y, hero_y in ((146, 184), (241, 277), (331, 370))
-               for x in (293, 373, 453))
+# A ready bar is a cyan pill above the unit that owns it. The first nine
+# belong to the Lightning Castle heroes, then the tree and the two snowman
+# rows. Value is (bar x, bar y, tap x, tap y).
+TARGETS = (
+    (293, 146, 293, 184), (373, 146, 373, 184), (453, 146, 453, 184),
+    (293, 241, 293, 277), (373, 241, 373, 277), (453, 241, 453, 277),
+    (293, 331, 293, 370), (373, 331, 373, 370), (453, 331, 453, 370),
+    (119, 143, 119, 181),
+    (133, 363, 133, 401), (133, 479, 133, 517),
+)
+# Cyan ready bars are only drawn on friendly units, so their position doubles
+# as proof that this really is a battle screen.
+READY_BAR = (18, 3)
+# The wave/boss progress pill sits just under the HP/MP bar.
+HEALTH = (560, 0, 1260, 64)
 GAME_SCREENS = {"home", "gold", "replay_menu", "battle", "skip"}
 RETURN_SCREENS = GAME_SCREENS | {"victory", "defeat", "tower", "castles", "captcha"}
-AD_CLOSE_SCREENS = {"reward_granted", "ad_end_card", "ad_end_sheet"}
+AD_CLOSE_SCREENS = {"reward_granted", "ad_end_card", "ad_end_sheet", "ad_unknown_close"}
 AD_ACTIVITY = "com.google.android.gms.ads.AdActivity"
+CAPTCHA_ATTEMPTS = 3
+CAPTCHA_WINDOW = 16
+CAPTCHA_PAUSE = 4
 
 
 def viewport(image):
@@ -83,6 +99,208 @@ class Screen:
     layout: str | None = None
     level: int | None = None
     cost: int | None = None
+    points: tuple = ()
+
+
+def color_runs(mask, minimum, maximum=10_000):
+    """Left/right edges of every horizontal run of set pixels."""
+    mask = np.asarray(mask, dtype=bool)
+    indexes = np.flatnonzero(mask)
+    if not len(indexes):
+        return []
+    breaks = np.flatnonzero(np.diff(indexes) > 1)
+    starts = np.r_[indexes[0], indexes[breaks + 1]]
+    ends = np.r_[indexes[breaks], indexes[-1]]
+    return [(int(start), int(end)) for start, end in zip(starts, ends)
+            if minimum <= end - start + 1 <= maximum]
+
+
+def health_row(rgb):
+    """Rows covered by the castle HP/MP bar pair, or None off a battle screen.
+
+    The HP bar empties to black while a boss is being finished, so the MP bar
+    alone is enough to locate the pair.
+    """
+    left, top, right, bottom = HEALTH
+    band = rgb[top:bottom, left:right]
+    red, green, blue = band.transpose(2, 0, 1)
+    health = (red > 130) & (red - green > 60) & (red - blue > 55)
+    mana = (blue > 130) & (blue - red > 55) & (blue - green > 30)
+    rows, health_rows = [], []
+    for y in range(band.shape[0]):
+        health_runs = color_runs(health[y], 40, 240)
+        mana_runs = color_runs(mana[y], 90, 240)
+        if not mana_runs:
+            continue
+        health_rows.extend(y for _ in health_runs)
+        rows.append(y + top)
+    if not rows or len(rows) < 5:
+        return None
+    return (min(rows), max(rows)) if health_rows or len(rows) >= 5 else None
+
+
+def status_pill(rgb, health):
+    """The progress pill under the HP bar: "wave" or "boss", or None.
+
+    A boss wave replaces the white WAVE progress pill with a labelled BOSS
+    health bar, which is why the plain templates stop matching mid-fight.
+    Both pills share a black frame, so the row is found from the frame and
+    the label is then read from the red fill or the white progress.
+    """
+    if health is None:
+        return None
+    top = health[1] + 3
+    for y in range(top, min(top + 46, rgb.shape[0] - 1)):
+        segment = rgb[y, 560:1260]
+        red, green, blue = segment.transpose(1, 0)
+        fill = (red > 130) & (red - green > 60) & (red - blue > 55)
+        frame = (red < 85) & (green < 85) & (blue < 95)
+        pale = (red > 170) & (green > 170) & (blue > 175)
+        dark = (red < 60) & (green < 60) & (blue < 70)
+        if any(left <= 260 and right - left >= 190 for left, right in color_runs(frame, 190, 540)):
+            # The BOSS label sits left of a short red fill that starts at a
+            # fixed spot, so a red particle behind the HUD cannot fake it.
+            if any(120 <= left <= 175 and right - left >= 40
+                   for left, right in color_runs(fill, 40, 110)):
+                return "boss", y
+        # The WAVE label sits left of a long white, late (dark) or full progress.
+        if any(220 <= left <= 255 and right - left >= 200 for left, right in color_runs(pale, 200, 470)):
+            return "wave", y
+        if any(220 <= left <= 255 and right - left >= 300 for left, right in color_runs(dark, 300, 470)):
+            return "wave", y
+    return None
+
+
+def wave_pill(rgb, health):
+    """A filled WAVE progress pill, whichever shade the bar is in.
+
+    The progress fades from white to black across a wave and a scaled window
+    capture blurs its edges, so the pill is recognised from the black frame
+    straddling a long run of pale or dark fill instead of by template.
+    """
+    if health is None:
+        return False
+    top = health[1] + 3
+    for y in range(top, min(top + 46, rgb.shape[0] - 1)):
+        segment = rgb[y, 560:1260]
+        red, green, blue = segment.transpose(1, 0)
+        pale = (red > 185) & (green > 185) & (blue > 190)
+        dark = (red < 80) & (green < 80) & (blue < 80)
+        for runs, minimum in ((pale, 120), (dark, 150)):
+            for left, right in color_runs(runs, minimum, 460):
+                if 215 <= left <= 270 and right - left >= minimum:
+                    return True
+    return False
+
+
+def ready_bars(rgb):
+    """Indexes of the cyan skill/hero cooldown bars that are full.
+
+    The tolerant margins let a capture scaled away from 1280 × 720 still count.
+    """
+    ready = []
+    half_width, half_height = READY_BAR
+    for index, (x, y, _, _) in enumerate(TARGETS):
+        if x + half_width >= rgb.shape[1] or y + half_height >= rgb.shape[0]:
+            continue
+        box = rgb[y - half_height:y + half_height + 1, x - half_width:x + half_width + 1]
+        if box.size == 0:
+            continue
+        red, green, blue = box.astype(np.int16).transpose(2, 0, 1)
+        cyan = (blue > 140) & (green > 88) & (blue - red > 38) & (green - red > 30)
+        if cyan.mean() >= 0.70:
+            ready.append(index)
+    return ready
+
+
+def ready_groups(rgb):
+    """Ready cooldown bars grouped into the three hero rows.
+
+    Two ready bars in one hero row is signed evidence from the game's own
+    HUD: a lone cyan slime in the lane never lines up with the grid columns.
+    """
+    xs = (293, 373, 453)
+    ys = (146, 241, 331)
+
+    counts = [0, 0, 0]
+    for index in ready_bars(rgb):
+        x, y, _, _ = TARGETS[index]
+        column = min(range(3), key=lambda candidate: abs(x - xs[candidate]))
+        # A bar drawn between two columns (a moved HUD, a stray slime) is not
+        # evidence of the 3 × 3 grid.
+        if abs(x - xs[column]) > 12:
+            continue
+        row = min(range(3), key=lambda candidate: abs(y - ys[candidate]))
+        counts[row] += 1
+    return counts
+
+
+CROSS_SIZE = 9
+CLOSE_CORNERS = {
+    "top-right": (1060, 1280, 0, 110),
+    "top-left": (0, 220, 0, 110),
+    "bottom-right": (1060, 1280, 610, 720),
+    "bottom-left": (0, 220, 610, 720),
+}
+STILL_FRAME = 1.5
+# Second-long wait before a guess based only on a corner X is allowed.
+AD_MINIMUM = {"reward_granted": 0.0, "ad_end_card": 0.0, "ad_end_sheet": 0.0,
+              "ad_unknown_close": 8.0}
+
+
+def _integral(mask):
+    return np.pad(mask.cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0)))
+
+
+def _box_sums(mask, size):
+    integral = _integral(mask)
+    return (integral[size:, size:] - integral[:-size, size:]
+            - integral[size:, :-size] + integral[:-size, :-size])
+
+
+def _diagonal_ink(gray, polarity, size=CROSS_SIZE):
+    """Score every pixel as the centre of an X of the given polarity."""
+    ink = (gray > 150) if polarity > 0 else (gray < 105)
+    ink = ink.astype(np.float32)
+    height, width = ink.shape
+    span = 2 * size + 1
+    if height <= span or width <= span:
+        return None
+    # Sum each diagonal of every span-sized window by shifting the mask.
+    summed = np.zeros((height - 2 * size, width - 2 * size), dtype=np.float32)
+    for step in range(-size, size + 1):
+        row = size + step
+        column = size + step
+        summed += ink[row:row + height - 2 * size, column:column + width - 2 * size]
+        summed += ink[row:row + height - 2 * size, 2 * size - column:2 * size - column + width - 2 * size]
+    diagonals = 2 * span
+    coverage = summed / diagonals
+    # A flat block is not a cross: a real X in this box is mostly background.
+    area = _box_sums(ink, span) / (span * span)
+    return coverage - 0.9 * area
+
+
+def close_candidates(rgb):
+    """Candidate ad close buttons in the screen corners, best first."""
+    found = []
+    for corner, (x0, x1, y0, y1) in CLOSE_CORNERS.items():
+        region = rgb[y0:y1, x0:x1]
+        gray = region.mean(axis=2).astype(np.float32) if region.ndim == 3 else region.astype(np.float32)
+        for polarity in (1, -1):
+            scores = _diagonal_ink(gray, polarity)
+            if scores is None:
+                continue
+            for _ in range(4):
+                y, x = np.unravel_index(scores.argmax(), scores.shape)
+                score = float(scores[y, x])
+                if score < 0.42:
+                    break
+                point = (int(x + x0 + CROSS_SIZE), int(y + y0 + CROSS_SIZE))
+                if all(abs(point[0] - other[0]) > 26 or abs(point[1] - other[1]) > 26
+                       for _, other in found):
+                    found.append((score, point))
+                scores[max(0, y - 30):y + 31, max(0, x - 30):x + 31] = -1
+    return found
 
 
 class Vision:
@@ -196,6 +414,11 @@ class Vision:
                 return None
         return 1257, 42
 
+    def ad_chrome(self, rgb):
+        """True when the frame looks like an ad that has finished playing."""
+        header = rgb[:36]
+        return bool(np.mean(np.ptp(header, axis=2)) < 40) or bool(self.matches(rgb, "skip_title"))
+
     def home_screen(self, rgb):
         gold = region(rgb, GOLD_HUD)
         gems, layout = self.tower.home(rgb) if self.tower else (None, None)
@@ -219,13 +442,18 @@ class Vision:
             return Screen("ad_playing" if ad_foreground else "unknown")
         rgb = np.asarray(image, dtype=np.int16)
         if watching_ad or ad_foreground:
+            extra = tuple(point for _, point in close_candidates(rgb))
             if point := self.reward_close(image):
-                return Screen("reward_granted", point)
+                return Screen("reward_granted", point, points=extra)
             if point := self.ad_end_close(rgb):
-                return Screen("ad_end_card", point)
+                return Screen("ad_end_card", point, points=extra)
             if all(self.matches(rgb, name)
                    for name in ("ad_sheet_close", "ad_sheet_chevron", "ad_sheet_cta")):
-                return Screen("ad_end_sheet", (1257, 39))
+                return Screen("ad_end_sheet", (1257, 39), points=extra)
+            if self.ad_chrome(rgb) and extra:
+                # A close button at an unexpected spot with an unfamiliar
+                # background still leaves a finished ad that can be dismissed.
+                return Screen("ad_unknown_close", extra[0], points=extra[1:])
         if ad_foreground:
             return Screen("ad_playing")
         if self.matches(rgb, "captcha"):
@@ -250,14 +478,24 @@ class Vision:
                 return self.home_screen(rgb)
         if self.tower is not None and self.tower.is_home(rgb):
             return self.home_screen(rgb)
-        if hud and self.matches(rgb, "wave") and self.matches(rgb, "speed"):
-            ready = []
-            for index, (x, y, _) in enumerate(SKILLS):
-                red, green, blue = rgb[y-2:y+3, x-24:x+25].transpose(2, 0, 1)
-                cyan = (blue > 164) & (green > 105) & (blue - red > 65) & (green - red > 50)
-                if cyan.mean() >= 0.92:
-                    ready.append(index)
-            return Screen("battle", ready=tuple(ready))
+        # The WAVE pill is replaced by a BOSS bar during boss waves, so the
+        # battle screen can no longer be recognised from that template alone.
+        # A scaled window can also miss the tiny HUD template, so the HP/MP
+        # bars and cooldown pills are checked even without it.
+        if self.matches(rgb, "upgrade"):
+            return Screen("unknown")
+        health = health_row(rgb)
+        if health is not None:
+            pill = status_pill(rgb, health)
+            ready = ready_bars(rgb)
+            # A boss wave shows the BOSS bar instead of the WAVE pill, and a
+            # wave whose progress turned dark no longer matches the template.
+            # On a battle screen every bar left is a cooldown, so a few ready
+            # bars are enough evidence when both pills are hard to read.
+            if ((pill is not None and pill[0] == "boss") or self.matches(rgb, "wave")
+                    or self.matches(rgb, "wave_late") or wave_pill(rgb, health)
+                    or max(ready_groups(rgb)) >= 3):
+                return Screen("battle", ready=tuple(ready))
         return Screen("unknown")
 
 
@@ -279,11 +517,21 @@ class Player:
         self.reward_label_seen = False
         self.ad_close_attempts = {}
         self.ad_taps = 0
+        self.ad_tried_points = []
+        self.ad_seen = set()
         self.skip_offer = False
         self.gold_before = None
         self.after_victory = False
         self.skills_used = {}
         self.last_skill = float("-inf")
+        self.last_ad_tap = float("-inf")
+
+    def ad_minimum(self):
+        """Seconds before corner-only guesses are allowed to tap."""
+        minimum = 0.0
+        for name in self.ad_seen:
+            minimum = max(minimum, AD_MINIMUM.get(name, 0.0))
+        return minimum
 
     def start_ad(self, time, gold=None):
         self.ad, self.ad_since, self.ad_warned = "watch", time, False
@@ -291,9 +539,13 @@ class Player:
         self.reward_label_seen = False
         self.ad_close_attempts.clear()
         self.ad_taps = 0
+        self.ad_tried_points.clear()
+        self.ad_seen.clear()
 
     def feed_ad(self, time, screen, age):
         name = screen.name
+        if name in AD_CLOSE_SCREENS:
+            self.ad_seen.add(name)
         if name == "ad_playing":
             if self.ad == "watch":
                 self.ad = "playing"
@@ -302,12 +554,28 @@ class Player:
         elif name in AD_CLOSE_SCREENS:
             self.ad = "return"
             self.reward_label_seen |= name == "reward_granted"
+            options = [screen.point]
+            if time - self.ad_since >= self.ad_minimum():
+                # Guesswork only once the ad has had time to reach its end
+                # card, otherwise a logo could be tapped mid-video.
+                options += list(screen.points)
+            options = [point for point in options if point]
+            if options:
+                # Retry on a different spot: the found button may be a logo.
+                offset = self.ad_taps % len(options)
+                point = options[offset]
+                if point not in self.ad_tried_points:
+                    self.ad_tried_points.append(point)
+            else:
+                point = None
             attempts, last_tap = self.ad_close_attempts.get(name, (0, float("-inf")))
-            if age >= 0.20 and attempts < 3 and self.ad_taps < 9 and time - last_tap >= 1.5:
+            if point and age >= 0.20 and attempts < 6 and self.ad_taps < 15 \
+                    and time - last_tap >= 1.4 and time - self.last_ad_tap >= 1.4:
                 self.ad_close_attempts[name] = (attempts + 1, time)
                 self.ad_taps += 1
+                self.last_ad_tap = time
                 label = "close granted ad" if name == "reward_granted" else "close ad end card"
-                return Action(label, screen.point)
+                return Action(label, point)
         elif name in RETURN_SCREENS and age >= 0.55:
             if self.ad == "return":
                 changed = (screen.gold is not None and self.gold_before is not None
@@ -323,6 +591,29 @@ class Player:
         if self.ad and not self.ad_warned and time - self.ad_since >= 90:
             self.report(time, "Ad still open: waiting for recognized reward or manual close")
             self.ad_warned = True
+        return None
+
+    def close_stalled_ad(self, time, screen, still_for):
+        """Keep trying visible X buttons when a finished ad refuses to close."""
+        if not self.ad or still_for < STILL_FRAME:
+            return None
+        if time - self.ad_since < self.ad_minimum():
+            return None
+        options = [screen.point, *screen.points]
+        options = [point for point in options if point]
+        if not options or time - self.last_ad_tap < 1.4:
+            return None
+        for point in options:
+            if point not in self.ad_tried_points[-2:]:
+                self.ad_tried_points.append(point)
+                self.last_ad_tap = time
+                return Action("close stalled ad", point)
+        if len(options) > 1 and time - self.last_ad_tap >= 6:
+            # Every visible spot was tried; cycle once more slowly in case the
+            # ad only becomes dismissible after its timer ends.
+            self.ad_tried_points.clear()
+            self.last_ad_tap = time
+            return Action("retry ad close", options[0])
         return None
 
     def feed(self, time, screen):
@@ -424,7 +715,7 @@ class Player:
             if index not in self.skills_used:
                 self.skills_used[index] = 0
                 self.last_skill = time
-                x, _, y = SKILLS[index]
+                _, _, x, y = TARGETS[index]
                 return Action(f"cast skill {index + 1}", (x, y))
         return None
 
@@ -462,7 +753,19 @@ def play(args, report, journal):
     frames = replay_frames(args.video) if args.video else adb_frames(adb, args.serial, args.seconds)
     prefix = "TAP" if args.tap else "PREVIEW"
     print(f"{prefix} mode={args.mode} source={args.video or args.serial}", flush=True)
+    previous = None
+    still_since = 0.0
     for time, original in frames:
+        current = viewport(original)
+        if current is not None:
+            current = np.asarray(current, dtype=np.int16)
+        if previous is None or current is None:
+            previous = current
+        else:
+            if float(np.mean(np.abs(current - previous))) > 3:
+                still_since = time
+            previous = current
+        still_for = time - still_since
         if args.video:
             screen = vision.classify(viewport(original), watching_ad=player.ad is not None)
         else:
@@ -474,19 +777,33 @@ def play(args, report, journal):
                       if activity else Screen("unfocused"))
         was_paused = player.paused
         action = player.feed(time, screen)
+        if player.ad and not action:
+            # A playing ad moves; a stalled one is a still frame still showing X.
+            action = player.close_stalled_ad(time, screen, still_for)
         if args.auto_captcha and player.paused and not was_paused:
             attempt_started = monotonic()
-            limit = min(16, args.seconds - time) if args.seconds else 16
-            try:
-                selected = limit > 0 and watch(
-                    args.ldconsole, args.index, args.serial, limit, True,
-                    start_screen=vision.captcha_start_visible,
-                )
-            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-                report(time + monotonic() - attempt_started, f"CAPTCHA attempt stopped: {exc}")
-                selected = False
-            if selected:
-                report(time + monotonic() - attempt_started, "CAPTCHA: selection sent; waiting for the game to resume")
+            limit = min(CAPTCHA_WINDOW, args.seconds - time) if args.seconds else CAPTCHA_WINDOW
+            selected = False
+            for attempt in range(1, CAPTCHA_ATTEMPTS + 1):
+                try:
+                    if limit <= 0:
+                        raise RuntimeError("out of time")
+                    selected = watch(args.ldconsole, args.index, args.serial, limit, True,
+                                     start_screen=vision.captcha_start_visible)
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                    report(time + monotonic() - attempt_started, f"CAPTCHA attempt stopped: {exc}")
+                if selected:
+                    report(time + monotonic() - attempt_started,
+                           "CAPTCHA: selection sent; waiting for the game to resume")
+                    break
+                if attempt < CAPTCHA_ATTEMPTS:
+                    # The panel stays up after a miss; a fresh look may read the
+                    # settled layout the previous attempt could not finish.
+                    report(time + monotonic() - attempt_started,
+                           f"CAPTCHA: attempt {attempt} did not settle; trying again")
+                    sleep(CAPTCHA_PAUSE)
+                    limit = (min(CAPTCHA_WINDOW, args.seconds - time)
+                             if args.seconds else CAPTCHA_WINDOW)
             else:
                 report(time + monotonic() - attempt_started, "CAPTCHA: waiting for manual solution")
         if action:

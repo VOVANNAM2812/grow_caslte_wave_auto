@@ -9,6 +9,7 @@ from queue import Empty, Full, Queue
 import re
 from shutil import copyfile
 import subprocess
+import sys
 from tempfile import NamedTemporaryFile
 from threading import Event, Thread
 from time import monotonic, sleep
@@ -17,7 +18,8 @@ from uuid import uuid4
 import numpy as np
 from PIL import Image, ImageGrab
 
-from captcha import CENTER, Detector, VIEWPORT, board_image, format_result, gem_position, upright_layout
+from captcha import (CENTER, Detector, SLOT_NAMES, VIEWPORT, board_image, format_result,
+                     gem_position, upright_layout)
 from windows_video import read_video
 
 
@@ -102,12 +104,68 @@ def tap_point(adb, serial, frame, point):
     return x, y
 
 
-def tap_cup(adb, serial, result, captured_board):
-    frame, gem = matching_game_frame(adb, serial, captured_board)
-    if gem is not None:
-        raise RuntimeError("The cups are no longer ready for a selection.")
-    x, y = tap_point(adb, serial, frame, result.coordinate)
-    print(f"Sent one tap to {serial} at ({x}, {y}).", flush=True)
+def panel_visible(frame):
+    """True while the diamond CAPTCHA panel covers the game, in any of its
+    states: waiting for START, shuffling, or showing "Incorrect"/"Try again"."""
+    from autoplay import Vision
+
+    gray = np.asarray(frame.convert("L"), dtype=np.int16)
+    # The panel interior is a flat brown card: no HUD or battle pixels in it.
+    card = gray[130:470, 330:950]
+    if float(np.ptp(card)) < 60:
+        return False
+    flat = np.abs(card - int(np.median(card))) < 14
+    return float(flat.mean()) > 0.55 and Vision(False).matches(np.asarray(frame, dtype=np.int16),
+                                                               "captcha")
+
+
+def feedback(frame):
+    """Read the CAPTCHA panel: "wrong" or "waiting"."""
+    if not panel_visible(frame):
+        return None
+    gray = np.asarray(frame.convert("L"), dtype=np.int16)
+    if (gray[545:620, 300:1000] > 110).mean() > 0.05:
+        return "wrong"
+    return "waiting"
+
+
+def select_candidates(adb, serial, result):
+    """Offer the tracked cup, then the next candidates while a miss is shown.
+
+    The game reveals the diamond for a few seconds after a wrong pick, so a
+    second guess is much better evidence than a single tracked vote.
+    """
+    deadline = monotonic() + 22
+    for slot in result.candidates()[:3]:
+        if monotonic() > deadline:
+            break
+        frame = game_frame(adb, serial)
+        if not panel_visible(frame):
+            print("CAPTCHA: panel closed after a selection.", flush=True)
+            return slot
+        x, y = result.point(slot)
+        tap_point(adb, serial, frame, (x, y))
+        print(f"CAPTCHA: tapped {SLOT_NAMES[slot]} ({x}, {y}).", flush=True)
+        wrong = False
+        until = monotonic() + 6
+        while monotonic() < until:
+            sleep(0.5)
+            state = feedback(game_frame(adb, serial))
+            if state == "wrong":
+                wrong = True
+                break
+            if state is None:
+                print(f"CAPTCHA: {SLOT_NAMES[slot]} closed the panel.", flush=True)
+                return slot
+        if not wrong:
+            return slot
+        # Let the "Try again" countdown finish so the next tap counts.
+        until = monotonic() + 12
+        while monotonic() < until:
+            if feedback(game_frame(adb, serial)) != "wrong":
+                break
+            sleep(0.8)
+    return None
 
 
 def verify_start(frame, gem, start_screen):
@@ -116,14 +174,20 @@ def verify_start(frame, gem, start_screen):
 
 
 def solve_from_adb_recording(adb, serial, start_screen):
-    # Record inside Android, where occluding Windows apps cannot hide the game.
+    """Start the round and follow it from an on-device recording.
+
+    Two recordings are kept: one that always runs the full 16 seconds so a
+    failed round can be inspected, and one created after START for analysis.
+    The recording outlives the first selection, so the reveal after a miss
+    still ends up in the analysed frames.
+    """
     initial = game_frame(adb, serial)
     initial_board = board_image(initial)
     verify_start(initial, gem_position(initial_board), start_screen)
     remote = f"/data/local/tmp/growcastle-captcha-{uuid4().hex}.mp4"
     recording = subprocess.Popen(
         [str(adb), "-s", serial, "shell", "screenrecord", "--size", "960x540",
-         "--time-limit", "7", remote],
+         "--time-limit", "16", remote],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
@@ -147,8 +211,9 @@ def solve_from_adb_recording(adb, serial, start_screen):
         if recording.poll() is not None:
             raise RuntimeError("ADB screen recording ended before CAPTCHA Start.")
         tap_point(adb, serial, frame, START_POINT)
+        started = monotonic()
         print("CAPTCHA: started during ADB screen recording.", flush=True)
-        _, stderr = recording.communicate(timeout=9)
+        _, stderr = recording.communicate(timeout=18)
         if recording.returncode:
             raise RuntimeError(stderr.decode(errors="replace").strip() or "ADB screen recording failed.")
 
@@ -162,15 +227,18 @@ def solve_from_adb_recording(adb, serial, start_screen):
             for _, time, image in video:
                 board = board_image(image)
                 result = detector.feed_board(time, board)
-                if result is not None:
-                    print(f"Round 1: {format_result(result)}", flush=True)
-                    if result.coordinate is None:
-                        return False
-                    tap_cup(adb, serial, result, board)
-                    selected = True
-                    return True
+                if result is None:
+                    continue
+                print(f"Round 1: {format_result(result)}", flush=True)
+                if result.coordinate is None:
+                    return False
+                if select_candidates(adb, serial, result) is None:
+                    return False
+                selected = True
+                return True
         finally:
             video.close()
+        print(f"CAPTCHA: no round completed ({monotonic() - started:.0f}s of recording).", flush=True)
         return False
     finally:
         if recording.poll() is None:
@@ -208,8 +276,16 @@ def keep_window_round(frames):
 def watch(console, index, serial, duration, tap, start_screen=None):
     if start_screen is not None and not tap:
         raise ValueError("Automatic CAPTCHA start requires tap mode.")
-    ct.windll.user32.SetProcessDPIAware()
-    hwnd = window_handle(console, index)
+    # Only Windows has a window capture path; elsewhere ADB recording is enough.
+    hwnd = None
+    if sys.platform == "win32":
+        ct.windll.user32.SetProcessDPIAware()
+        try:
+            hwnd = window_handle(console, index)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"CAPTCHA: no window capture ({exc}); using ADB screen recording.", flush=True)
+    else:
+        hwnd = None
     adb = console.with_name("adb.exe")
     if tap:
         if run(adb, "-s", serial, "get-state").strip() != b"device":
@@ -220,16 +296,17 @@ def watch(console, index, serial, duration, tap, start_screen=None):
     frames = Queue(maxsize=CAPTURE_FPS * 5)
     stop = Event()
     start = monotonic()
-    capture = Thread(target=capture_frames, args=(hwnd, frames, stop, start), daemon=True)
+    capture = Thread(target=capture_frames, args=(hwnd, frames, stop, start), daemon=True) if hwnd else None
     print(f"Watching LDPlayer instance {index} ({'one tap enabled' if tap else 'preview only'}).",
           flush=True)
-    capture.start()
+    if capture is not None:
+        capture.start()
     rounds = 0
     started = False
     selected = False
     round_frames = []
     try:
-        while not duration or monotonic() - start < duration:
+        while capture is not None and (not duration or monotonic() - start < duration):
             if start_screen is not None and not started and monotonic() - start >= 1.25:
                 break
             if stop.is_set():
@@ -259,14 +336,17 @@ def watch(console, index, serial, duration, tap, start_screen=None):
                 if tap and result.coordinate is not None:
                     if monotonic() - start - result.end_time > 4:
                         raise RuntimeError("Prediction is stale. Run the detector again.")
-                    tap_cup(adb, serial, result, board)
-                    selected = True
-                    return True
+                    if select_candidates(adb, serial, result) is not None:
+                        selected = True
+                        return True
+                    if start_screen is not None:
+                        return False
                 if start_screen is not None:
                     return False
     finally:
         stop.set()
-        capture.join(timeout=2)
+        if capture is not None:
+            capture.join(timeout=2)
         if round_frames and not selected:
             keep_window_round(round_frames)
     if start_screen is not None and not started and (not duration or duration >= 12):
