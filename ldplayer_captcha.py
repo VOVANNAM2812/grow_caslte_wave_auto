@@ -471,7 +471,15 @@ def watch(console, index, serial, duration, tap, start_screen=None):
         if run(adb, "-s", serial, "get-state").strip() != b"device":
             raise RuntimeError(f"ADB device {serial} is unavailable.")
 
-    detector = Detector(sample_interval=0.025 if start_screen is not None else 0.043)
+    # Watching a round that has to be solved always goes through the 60 fps ADB
+    # recording: the cup holding the diamond is told apart by how hard it
+    # spins, and the window grab cannot hold that rate. The window is used to
+    # follow along and to confirm the panel, not as the measuring instrument.
+    if start_screen is not None:
+        print("CAPTCHA: recording at 60 frames/s through ADB.", flush=True)
+        return solve_from_adb_recording(adb, serial, start_screen)
+
+    detector = Detector(sample_interval=0.043)
     # Keep a complete short shuffle available even while pose analysis lags.
     frames = Queue(maxsize=CAPTURE_FPS * 5)
     stop = Event()
@@ -561,9 +569,6 @@ def watch(console, index, serial, duration, tap, start_screen=None):
         capture.join(timeout=2)
         if round_frames and not selected:
             keep_window_round(round_frames)
-    if start_screen is not None and not started and (not duration or duration >= 12):
-        print("CAPTCHA: window capture unavailable; using ADB screen recording.", flush=True)
-        return solve_from_adb_recording(adb, serial, start_screen)
     print(f"Stopped after {rounds} completed challenge(s).", flush=True)
     return False
 
