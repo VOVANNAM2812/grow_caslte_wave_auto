@@ -145,12 +145,14 @@ def status_pill(rgb, health):
 
     A boss wave replaces the white WAVE progress pill with a labelled BOSS
     health bar, which is why the plain templates stop matching mid-fight.
-    Both pills share a black frame, so the row is found from the frame and
-    the label is then read from the red fill or the white progress.
+    Every candidate row is inspected before a verdict, because the BOSS label
+    itself is a long pale run that looks like a WAVE progress bar: a red fill
+    or a wide black frame anywhere in the band outranks a pale run.
     """
     if health is None:
         return None
     top = health[1] + 3
+    wave_row = None
     for y in range(top, min(top + 46, rgb.shape[0] - 1)):
         segment = rgb[y, 560:1260]
         red, green, blue = segment.transpose(1, 0)
@@ -158,19 +160,30 @@ def status_pill(rgb, health):
         frame = (red < 85) & (green < 85) & (blue < 95)
         pale = (red > 170) & (green > 170) & (blue > 175)
         dark = (red < 60) & (green < 60) & (blue < 70)
-        if any(left <= 260 and right - left >= 190 for left, right in color_runs(frame, 190, 540)):
-            # The BOSS label sits left of a short red fill that starts at a
-            # fixed spot. That spot drifts by a dozen pixels when the capture is
-            # scaled away from 1280 x 720, so the window is deliberately wide;
-            # the long black frame above still keeps stray red particles out.
-            if any(95 <= left <= 210 and right - left >= 35
-                   for left, right in color_runs(fill, 35, 130)):
+        # A BOSS bar is a wide black frame holding a red fill whose length is
+        # the boss's remaining health: 43 px when nearly dead, over 220 px at
+        # half. Its left edge drifts by a dozen pixels when the capture is
+        # scaled, so the span is read by length with a wide window.
+        long_frame = [run for run in color_runs(frame, 150, 620) if run[1] - run[0] >= 150]
+        if long_frame:
+            if any(95 <= left <= 240 and right - left >= 20
+                   for left, right in color_runs(fill, 20, 480)):
                 return "boss", y
-        # The WAVE label sits left of a long white, late (dark) or full progress.
-        if any(190 <= left <= 285 and right - left >= 190 for left, right in color_runs(pale, 190, 480)):
-            return "wave", y
-        if any(190 <= left <= 285 and right - left >= 285 for left, right in color_runs(dark, 285, 480)):
-            return "wave", y
+            # No red at all: the boss is nearly down and only its black frame
+            # is left. That frame starts level with the BOSS label, far left of
+            # where the WAVE progress bar begins, and runs on to the right.
+            if any(left <= 160 and right >= 500 for left, right in long_frame):
+                return "boss", y
+        if wave_row is None:
+            # The WAVE label sits left of a long pale, late (dark) or full bar.
+            if any(190 <= left <= 285 and right - left >= 190
+                   for left, right in color_runs(pale, 190, 480)):
+                wave_row = y
+            elif any(190 <= left <= 285 and right - left >= 285
+                     for left, right in color_runs(dark, 285, 480)):
+                wave_row = y
+    if wave_row is not None:
+        return "wave", wave_row
     return None
 
 
