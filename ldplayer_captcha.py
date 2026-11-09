@@ -60,14 +60,29 @@ def remote_written(adb, serial, remote):
     return size.strip().isdigit() and int(size) > 0
 
 
-def screenrecord_help(adb, serial):
-    """Usage text of screenrecord, or an empty string when it cannot run."""
-    for arguments in (["--help"], []):
-        try:
-            return run(adb, "-s", serial, "shell", "screenrecord", *arguments,
-                       timeout=6).decode(errors="replace")
-        except (subprocess.CalledProcessError, subprocess.SubprocessError):
-            continue
+def shell_text(adb, serial, command, timeout=6):
+    """Run one shell command and return its text, with the error joined in.
+
+    screenrecord writes its usage to stderr and exits non-zero, so `run` would
+    raise and hide the very text that says which flags exist. Both streams are
+    read here and the exit status is ignored: the caller only wants the words.
+    """
+    try:
+        finished = subprocess.run(
+            [str(adb), "-s", serial, "shell", command],
+            capture_output=True, timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (finished.stdout + finished.stderr).decode(errors="replace")
+
+
+def screenrecord_usage(adb, serial):
+    """Everything screenrecord says about itself, from either stream."""
+    for command in ("screenrecord --help", "screenrecord"):
+        text = shell_text(adb, serial, command)
+        if "screenrecord" in text:
+            return text
     return ""
 
 
@@ -364,9 +379,12 @@ def solve_from_adb_recording(adb, serial, start_screen):
     # purpose: the flag was renamed from --size to --video-size between Android
     # releases, and a wrong name makes screenrecord exit before writing a frame,
     # which is what "did not start" meant. The native size is always accepted.
-    usage = screenrecord_help(adb, serial)
+    usage = screenrecord_usage(adb, serial)
     if not usage:
-        raise RecordingUnavailable("this Android build has no screenrecord.")
+        raise RecordingUnavailable(
+            "the device does not answer screenrecord ("
+            + (shell_text(adb, serial, "which screenrecord", timeout=4).strip()
+               or "binary not found") + ")")
     if "--video-size" in usage or "--size" in usage:
         size_flag = "--video-size" if "--video-size" in usage else "--size"
         command = [str(adb), "-s", serial, "shell", "screenrecord", size_flag, "1280x720"]

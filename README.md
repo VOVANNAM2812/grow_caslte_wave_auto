@@ -166,6 +166,8 @@ Vì cú xáo chỉ kéo dài khoảng 0,5–0,9 giây, phải ghi **60 khung/gi�
 
 Tool tự dò bản `screenrecord` của máy ảo để chọn đúng tên tham số kích thước: Android cũ dùng `--size`, Android mới dùng `--video-size`. Truyền sai tên thì `screenrecord` thoát ngay và không ghi được khung nào. Nếu máy ảo không ghi hình được, tool quay lại chụp cửa sổ và nói rõ trong log rằng quy luật xoay lúc đó không đáng tin.
 
+Khi log báo không ghi hình được, chạy `python check_record.py` để xem máy ảo trả lời gì về `screenrecord` (phiên bản Android, cờ kích thước nó hiểu, lỗi cụ thể). Gửi kết quả đó khi cần báo lỗi.
+
 Tool xử lý cả hai kiểu xáo cốc của game: kiểu đổi chỗ trái phải và kiểu xoay tròn cả vòng. Kết quả in kèm danh sách `ranked` để bạn biết các cốc dự bị. Bản ghi không ra kết quả vẫn được giữ trong `logs`, và `captcha.py` in các cốc ứng viên thay vì bỏ trống.
 
 ```powershell
