@@ -55,6 +55,42 @@ def gem_position(image):
     return np.array([np.mean(x), np.mean(y)])
 
 
+def reveal_position(image):
+    """A diamond shown under a cup anywhere on the ring.
+
+    After a wrong tap the game lifts the chosen cup and shows where the diamond
+    really was. That reveal is the only certain answer the panel ever gives, so
+    it is read anywhere on the board instead of only over the middle.
+    """
+    colors = np.asarray(image, dtype=np.int16)
+    red, green, blue = colors[:, :, :3].transpose(2, 0, 1)
+    y, x = np.nonzero((blue > 129) & (blue > red + 35) & (green > red + 23))
+    if len(x) < 12 or len(x) > 320 or np.ptp(x) > 30 or np.ptp(y) > 28:
+        return None
+    point = np.array([np.mean(x), np.mean(y)])
+    gap, distance, slot = ring_distance(point)
+    # Only trust a diamond sitting out on the cup ring, not one in the middle.
+    if distance > 26 or gap > 24:
+        return None
+    return slot
+
+
+def reveal_slot(boards):
+    """Reward cup revealed after a miss, if the recording shows one."""
+    seen = []
+    for board in boards:
+        slot = reveal_position(board)
+        if slot is not None:
+            seen.append(slot)
+    if len(seen) < 2:
+        return None
+    counts = {}
+    for slot in seen:
+        counts[slot] = counts.get(slot, 0) + 1
+    slot, count = max(counts.items(), key=lambda item: item[1])
+    return slot if count >= max(2, len(seen) // 2) else None
+
+
 def patch(image, center, radius):
     x, y = int(round(center[0])), int(round(center[1]))
     return image[y - radius:y + radius + 1, x - radius:x + radius + 1]
@@ -339,13 +375,31 @@ class Result:
     ranked: tuple = ()
 
     def candidates(self):
-        """Final slots in confidence order, including the reported one."""
+        """Final slots in confidence order, including the reported one.
+
+        Eight identical cups make a whole-ring roll invisible in the settled
+        frames: the ring may have turned by any number of slots. When the vote
+        is not confident the neighbours of the best guess are offered too, so a
+        wrong tap can still be followed by a correct one instead of running out
+        of attempts.
+        """
         order = []
         if self.final_slot is not None:
             order.append(self.final_slot)
         for slot, _, _ in self.ranked:
             if slot not in order:
                 order.append(slot)
+        if self.final_slot is None and order:
+            best = order[0]
+            # Nearest neighbours first: the ordinary shuffle rolls the ring by
+            # one or two cups, and trying a distant cup wastes the few attempts
+            # the game allows.
+            neighbours = sorted((slot for slot in range(len(SLOTS)) if slot != best),
+                                key=lambda slot: min((slot - best) % len(SLOTS),
+                                                     (best - slot) % len(SLOTS)))
+            for slot in neighbours:
+                if slot not in order:
+                    order.append(slot)
         return order
 
     def point(self, slot):
@@ -379,6 +433,7 @@ class Detector:
         self.gem_trail = []
         self.observations = []
         self.frames = []
+        self.boards = []
         self.tracker = None
         self.start_time = 0.0
         self.motion = False
@@ -428,6 +483,7 @@ class Detector:
             return self._finish(time, "cup layout did not settle")
         self.settled_frames = self.settled_frames + 1 if still else 0
         self.frames.append((time, gray))
+        self.boards.append(board)
         self.tracker.update(gray)
         if (not self.observations or time - self.observations[0].time <= 0.18
                 or time - self.observations[-1].time >= self.sample_interval
@@ -461,6 +517,11 @@ class Detector:
 
     def _decide(self):
         """Combine independent evidence into a ranked list of final slots."""
+        # A diamond shown under an opened cup after a miss is the answer itself;
+        # no amount of patch voting can beat it.
+        revealed = reveal_slot(self.boards)
+        if revealed is not None:
+            return revealed, 4, ((revealed, 4.0, "diamond revealed under cup"),)
         votes = {}
         notes = {}
 

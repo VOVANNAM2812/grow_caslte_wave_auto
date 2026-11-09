@@ -130,6 +130,30 @@ def feedback(frame):
     return "waiting"
 
 
+def replay_reveal(recording, result):
+    """Read the answer the game showed after a miss.
+
+    `recording` is either a saved video path or the list of (time, board) frames
+    still held in memory. Either way only frames from after the tap are used, so
+    the diamond the game lifts out is not mistaken for the entry diamond.
+    """
+    from captcha import reveal_slot
+    if isinstance(recording, (list, tuple)):
+        boards = [board for time, board in recording if time >= result.end_time]
+    else:
+        boards = []
+        video = read_video(recording)
+        try:
+            for _, time, image in video:
+                if time >= result.end_time:
+                    boards.append(board_image(image))
+        finally:
+            video.close()
+    if not boards:
+        return None
+    return reveal_slot(boards)
+
+
 def select_candidates(adb, serial, result):
     """Offer the tracked cup, then the next candidates while a miss is shown.
 
@@ -137,7 +161,7 @@ def select_candidates(adb, serial, result):
     second guess is much better evidence than a single tracked vote.
     """
     deadline = monotonic() + 22
-    for slot in result.candidates()[:3]:
+    for slot in result.candidates()[:4]:
         if monotonic() > deadline:
             break
         frame = game_frame(adb, serial)
@@ -231,12 +255,24 @@ def solve_from_adb_recording(adb, serial, start_screen):
                 if result is None:
                     continue
                 print(f"Round 1: {format_result(result)}", flush=True)
-                if result.coordinate is None:
-                    return False
-                if select_candidates(adb, serial, result) is None:
-                    return False
-                selected = True
-                return True
+                if select_candidates(adb, serial, result) is not None:
+                    selected = True
+                    return True
+                # The recording keeps running past the last tap, so the frames
+                # where the game lifts the chosen cup and shows the diamond are
+                # already on disk. Read them before deciding the round failed.
+                revealed = replay_reveal(local, result)
+                if revealed is not None:
+                    print(f"CAPTCHA: the recording shows the diamond under "
+                          f"{SLOT_NAMES[revealed]}; tapping it.", flush=True)
+                    frame = game_frame(adb, serial)
+                    x, y = result.point(revealed)
+                    tap_point(adb, serial, frame, (x, y))
+                    sleep(1.5)
+                    if feedback(game_frame(adb, serial)) != "wrong":
+                        selected = True
+                        return True
+                return False
         finally:
             video.close()
         print(f"CAPTCHA: no round completed ({monotonic() - started:.0f}s of recording).", flush=True)
@@ -347,12 +383,34 @@ def watch(console, index, serial, duration, tap, start_screen=None):
             if result is not None:
                 rounds += 1
                 print(f"Round {rounds}: {format_result(result)}", flush=True)
-                if tap and result.coordinate is not None:
+                if tap and (result.coordinate is not None or result.candidates()):
                     if monotonic() - start - result.end_time > 4:
                         raise RuntimeError("Prediction is stale. Run the detector again.")
                     if select_candidates(adb, serial, result) is not None:
                         selected = True
                         return True
+                    # Keep capturing for a moment: the game opens the chosen
+                    # cup and shows the diamond only after the tap.
+                    reveal_deadline = monotonic() + 3.5
+                    while monotonic() < reveal_deadline:
+                        try:
+                            more = frames.get(timeout=0.2)
+                        except Empty:
+                            continue
+                        if isinstance(more, Exception):
+                            break
+                        round_frames.append(more)
+                    revealed = replay_reveal(round_frames, result)
+                    if revealed is not None:
+                        print(f"CAPTCHA: captured replay shows the diamond under "
+                              f"{SLOT_NAMES[revealed]}; tapping it.", flush=True)
+                        frame = game_frame(adb, serial)
+                        x, y = result.point(revealed)
+                        tap_point(adb, serial, frame, (x, y))
+                        sleep(1.5)
+                        if feedback(game_frame(adb, serial)) != "wrong":
+                            selected = True
+                            return True
                     if start_screen is not None:
                         return False
                 if start_screen is not None:
