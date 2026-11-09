@@ -531,9 +531,26 @@ class Detector:
                 or time - self.observations[-1].time >= self.sample_interval
                 or self.settled_frames >= 3):
             self.observations.append(self.matcher.observe(time, gray))
-        if self.settled_frames >= 3 and time - self.start_time > 0.30:
+        if self._settled(time):
             return self._finish(time)
         return None
+
+    # A quiet frame means the cups have stopped moving. Three of them used to
+    # be required, which never happens when the recording is cut as soon as the
+    # cups settle: three of the five real rounds end with one or two quiet
+    # frames, so they were never reported at all. One quiet frame that lasts a
+    # little while is just as final, because a shaking cup is not quiet.
+    SETTLED_FRAMES = 1
+    SETTLED_SECONDS = 0.10
+
+    def _settled(self, time):
+        if time - self.start_time <= 0.30:
+            return False
+        if self.settled_frames >= 3:
+            return True
+        if self.settled_frames < self.SETTLED_FRAMES:
+            return False
+        return time - self.frames[-1][0] <= self.SETTLED_SECONDS or self.settled_frames > 1
 
     def _finish(self, time, reason="", blind=None):
         entry = self.initial_slot if self.initial_slot is not None else self.last_gem_slot
