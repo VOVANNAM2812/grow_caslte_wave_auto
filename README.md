@@ -131,6 +131,16 @@ Với máy ảo khác, dùng `--index` để chọn đúng cửa sổ LDPlayer. 
 
 Khi tool đã bắt đầu lượt mà chưa gửi được cú chọn cốc, bản ghi được lưu trong `logs` để chạy lại bằng `captcha.py`. Ghi hình ADB lưu clip MP4. Chụp cửa sổ lưu khung hình bàn cốc và thời gian trong file NPZ. Dùng đường dẫn bản ghi xuất hiện trong log làm đối số cho `captcha.py`.
 
+Mỗi lượt lưu lại còn có kèm một file **PDF** cùng tên, gồm các khung hình bàn cốc có ghi thời gian, để bạn gửi lại khi cần báo lỗi. Chat chỉ nhận ảnh, văn bản, JSON và PDF nên không gửi trực tiếp được video hay NPZ; PDF thay thế được cả hai.
+
+```powershell
+# Xuất một lượt bất kỳ ra PDF (MP4 hoặc NPZ đều được)
+.\.venv\Scripts\python.exe captcha_sheet.py logs\growcastle-captcha-<mã>.mp4
+
+# Chỉ lấy đoạn cần xem, dày khung hình hơn
+.\.venv\Scripts\python.exe captcha_sheet.py video1.mp4 --from 11.5 --to 14.0 --step 0.06 --out luot-2.pdf
+```
+
 ### Bộ dò CAPTCHA độc lập
 
 `captcha.py` tìm cốc ban đầu từ hướng viên kim cương di chuyển, so khớp hình cốc ở nhiều góc để phát hiện cốc xoay nhanh, rồi theo dõi các vị trí qua từng khung hình. Tool chỉ trả về tọa độ khi có đủ khung hình cùng hỗ trợ một vị trí cuối.

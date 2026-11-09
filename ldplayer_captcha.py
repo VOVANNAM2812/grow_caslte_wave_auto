@@ -20,6 +20,7 @@ from PIL import Image, ImageGrab
 
 from captcha import (CENTER, Detector, SLOT_NAMES, VIEWPORT, board_image, format_result,
                      gem_position, upright_layout)
+from captcha_sheet import build as build_sheet
 from windows_video import read_video
 
 
@@ -252,6 +253,7 @@ def solve_from_adb_recording(adb, serial, start_screen):
                     saved = logs / Path(remote).name
                     copyfile(local, saved)
                     print(f"CAPTCHA: kept unselected round at {saved}", flush=True)
+                    keep_contact_sheet(saved)
                 except OSError as exc:
                     print(f"CAPTCHA: could not keep the round recording: {exc}", flush=True)
             local.unlink(missing_ok=True)
@@ -259,6 +261,17 @@ def solve_from_adb_recording(adb, serial, start_screen):
             run(adb, "-s", serial, "shell", "rm", "-f", remote, timeout=3)
         except (OSError, subprocess.SubprocessError):
             pass
+
+
+def keep_contact_sheet(recording):
+    """Write the PDF contact sheet that a chat upload can accept."""
+    try:
+        target = recording.with_suffix(".pdf")
+        frames, pages = build_sheet(recording, 0.0, None, 0.1, target)
+        print(f"CAPTCHA: wrote {frames} frames on {pages} page(s) to {target} "
+              "- send this PDF to report the round.", flush=True)
+    except (OSError, ValueError, SystemExit) as exc:
+        print(f"CAPTCHA: could not write the contact sheet: {exc}", flush=True)
 
 
 def keep_window_round(frames):
@@ -269,6 +282,7 @@ def keep_window_round(frames):
         np.savez_compressed(saved, times=[time for time, _ in frames],
                             boards=np.stack([np.asarray(board.convert("RGB")) for _, board in frames]))
         print(f"CAPTCHA: kept unselected window round at {saved}", flush=True)
+        keep_contact_sheet(saved)
     except OSError as exc:
         print(f"CAPTCHA: could not keep the window recording: {exc}", flush=True)
 
