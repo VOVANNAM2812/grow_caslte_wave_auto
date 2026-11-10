@@ -846,6 +846,7 @@ class Player:
         self.gold_before = None
         self.after_victory = False
         self.skills_used = {}
+        self.cast_order = []
         self.last_skill = float("-inf")
         self.last_ad_tap = float("-inf")
 
@@ -1085,20 +1086,43 @@ class Player:
         return action
 
     def cast(self, time, ready, shifts=()):
+        """Cast the skilled unit that has gone longest without a turn.
+
+        Taking the lowest index each time starved whatever came last. The castle
+        heroes recharge in about a second and sit at the front of TARGETS, so
+        one was ready on nearly every frame; the single tap a frame allows went
+        to them, and the two snowman rows - slowest to recharge, last in the
+        list - never got one. No "cast skill 11" or "cast skill 12" line ever
+        appeared in the log.
+
+        The fix is a rotation: remember the order skills were cast in, and give
+        the tap to whoever has waited longest, whatever their index.
+        """
+        # A bar that leaves "ready" since its tap proves the game accepted it.
         for index in tuple(self.skills_used):
-            self.skills_used[index] = 0 if index in ready else self.skills_used[index] + 1
-            if self.skills_used[index] >= 2:
+            if index in ready:
+                if self.skills_used[index] < 2:
+                    self.skills_used[index] += 1
+            else:
                 del self.skills_used[index]
         if time - self.last_skill < 0.30:
             return None
         shift_of = dict(zip(ready, shifts)) if shifts else {}
-        for index in ready:
-            if index not in self.skills_used:
-                self.skills_used[index] = 0
-                self.last_skill = time
-                _, _, x, y = TARGETS[index]
-                return Action(f"cast skill {index + 1}", (x, y + shift_of.get(index, 0)))
-        return None
+        waiting = [index for index in ready if index not in self.skills_used]
+        if not waiting:
+            return None
+        # Position in the cast rotation, oldest first. A skill never cast yet
+        # sorts before every skill that has been, so the first frame of a run
+        # starts at the back of the list rather than the front.
+        order = {index: rank for rank, index in enumerate(self.cast_order)}
+        index = min(waiting, key=lambda candidate: (order.get(candidate, -1), candidate))
+        self.cast_order.append(index)
+        if len(self.cast_order) > 64:
+            del self.cast_order[:-32]
+        self.skills_used[index] = 0
+        self.last_skill = time
+        _, _, x, y = TARGETS[index]
+        return Action(f"cast skill {index + 1}", (x, y + shift_of.get(index, 0)))
 
 
 def adb_frames(adb, serial, seconds):

@@ -61,7 +61,7 @@ Chỉ `--tap` mới gửi thao tác bấm. Mỗi thiết bị ADB có một phi�
 | Tình huống | Hành động |
 | --- | --- |
 | Màn chính | Tool nhận diện các nút từ ảnh mẫu và bấm **Battle** hoặc **Replay** theo chế độ đang chạy. Trong menu Replay, tool chọn ô **100%**. |
-| Đang đánh | Tool nhìn thanh hồi kỹ năng. Khi thanh xanh đầy, tool bấm đơn vị sở hữu một lần và chờ thanh rời trạng thái đầy trước khi bấm lại ở lần hồi tiếp theo. Tool theo dõi 12 thanh: 9 hero của Lightning Castle, cây thần và hai hàng người tuyết. |
+| Đang đánh | Tool nhìn thanh hồi kỹ năng. Khi thanh xanh đầy, tool bấm đơn vị sở hữu một lần và chờ thanh rời trạng thái đầy trước khi bấm lại ở lần hồi tiếp theo. Tool theo dõi 12 thanh: 9 hero của Lightning Castle, cây thần và hai hàng người tuyết. Tool **luân phiên** giữa các thanh: lần bấm dành cho đơn vị lâu chưa được bấm nhất, không phải thanh đầu danh sách. Nhờ vậy hero hồi nhanh (1 giây) không chiếm hết lượt và hai hàng người tuyết (hồi 4 giây, ở cuối danh sách) vẫn được kích skill. |
 | Hộp **Wave Skip** | Tool bấm **X** để đóng hộp và tiếp tục đánh. |
 | **Victory** | Tool chờ về màn chính, ưu tiên hộp thưởng vàng nếu đã bật tự xem quảng cáo, rồi tiếp tục theo chế độ hiện tại. |
 | HP lâu đài về **0** | Tool nhận diện số 0 cùng thanh HP cạn, chuyển từ wave sang Replay và giữ Replay đến khi kết thúc phiên chạy. |
