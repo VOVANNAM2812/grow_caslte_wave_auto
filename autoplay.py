@@ -818,7 +818,8 @@ class Vision:
 
 
 class Player:
-    def __init__(self, mode, report, tower=None, auto_captcha=False, *, watch_ads=True):
+    def __init__(self, mode, report, tower=None, auto_captcha=False, *, watch_ads=True,
+                 rate=3.0):
         self.mode = mode
         self.report = report
         self.tower = tower
@@ -848,6 +849,12 @@ class Player:
         self.skills_used = {}
         self.cast_order = []
         self.last_skill = float("-inf")
+        # Taps per second for skill casting. One tap a frame was both the floor
+        # and the ceiling before: the frame rate set the pace and a busy bar
+        # could not be spent faster.
+        self.rate = max(0.2, float(rate))
+        self.last_cast_of = {}
+        self.budget = 1.0
         self.last_ad_tap = float("-inf")
 
     def ad_minimum(self):
@@ -1067,7 +1074,8 @@ class Player:
             self.report(time, "Unknown screen: waiting for the main screen or a battle")
             self.wait_notified = True
         if name == "battle":
-            return self.cast(time, screen.ready, screen.shifts) if age >= 0.45 else None
+            # Several skills can be due in one frame; the loop taps them all.
+            return self.cast(time, screen.ready, screen.shifts) if age >= 0.45 else []
         if self.acted or age < 0.20:
             return None
         if name == "skip":
@@ -1086,43 +1094,44 @@ class Player:
         return action
 
     def cast(self, time, ready, shifts=()):
-        """Cast the skilled unit that has gone longest without a turn.
+        """Skills to cast now, at most `rate` per second.
 
-        Taking the lowest index each time starved whatever came last. The castle
-        heroes recharge in about a second and sit at the front of TARGETS, so
-        one was ready on nearly every frame; the single tap a frame allows went
-        to them, and the two snowman rows - slowest to recharge, last in the
-        list - never got one. No "cast skill 11" or "cast skill 12" line ever
-        appeared in the log.
-
-        The fix is a rotation: remember the order skills were cast in, and give
-        the tap to whoever has waited longest, whatever their index.
+        A bar that has left "ready" since its tap proves the game accepted it,
+        so it may be cast again when it fills. A bar that is still full is only
+        offered a fresh tap once the same unit's turn comes round again, which
+        is what the cooldown below guarantees.
         """
-        # A bar that leaves "ready" since its tap proves the game accepted it.
         for index in tuple(self.skills_used):
-            if index in ready:
-                if self.skills_used[index] < 2:
-                    self.skills_used[index] += 1
-            else:
+            if index not in ready:
                 del self.skills_used[index]
-        if time - self.last_skill < 0.30:
-            return None
+        # Tokens accrue at the chosen rate and are capped at two, so a burst of
+        # ready bars empties quickly but a stall does not save up a flood.
+        if self.last_skill > time:                 # a replayed video goes back
+            self.last_skill = time
+        self.budget = min(2.0, self.budget + (time - self.last_skill) * self.rate)
+        self.last_skill = time
+        if self.budget < 1.0:
+            return []
         shift_of = dict(zip(ready, shifts)) if shifts else {}
-        waiting = [index for index in ready if index not in self.skills_used]
+        # A bar stays "ready" until the game registers the tap, so the same one
+        # is offered again on the next frame. Only the ones whose own cooldown
+        # has run out may be cast again.
+        waiting = [index for index in ready
+                   if time - self.last_cast_of.get(index, float("-inf")) >= 0.45]
         if not waiting:
-            return None
-        # Position in the cast rotation, oldest first. A skill never cast yet
-        # sorts before every skill that has been, so the first frame of a run
-        # starts at the back of the list rather than the front.
+            return []
         order = {index: rank for rank, index in enumerate(self.cast_order)}
-        index = min(waiting, key=lambda candidate: (order.get(candidate, -1), candidate))
+        waiting.sort(key=lambda candidate: (order.get(candidate, -1), candidate))
+        index = waiting[0]
+        self.budget -= 1.0
         self.cast_order.append(index)
         if len(self.cast_order) > 64:
             del self.cast_order[:-32]
         self.skills_used[index] = 0
+        self.last_cast_of[index] = time
         self.last_skill = time
         _, _, x, y = TARGETS[index]
-        return Action(f"cast skill {index + 1}", (x, y + shift_of.get(index, 0)))
+        return [Action(f"cast skill {index + 1}", (x, y + shift_of.get(index, 0)))]
 
 
 def adb_frames(adb, serial, seconds):
@@ -1152,7 +1161,8 @@ def foreground_activity(adb, serial):
 
 def play(args, report, journal):
     tower = TowerUpgrade(report, journal) if args.upgrade_tower else None
-    player = Player(args.mode, report, tower, args.auto_captcha, watch_ads=args.ads)
+    player = Player(args.mode, report, tower, args.auto_captcha, watch_ads=args.ads,
+                    rate=args.skill_rate)
     vision = Vision(args.upgrade_tower)
     adb = args.ldconsole.with_name("adb.exe")
     frames = replay_frames(args.video) if args.video else adb_frames(adb, args.serial, args.seconds)
@@ -1218,7 +1228,10 @@ def play(args, report, journal):
                              if args.seconds else CAPTCHA_WINDOW)
             else:
                 report(time + monotonic() - attempt_started, "CAPTCHA: waiting for manual solution")
-        if action:
+        # A battle frame can owe several skill taps; every other screen emits
+        # one action or none.
+        actions = action if isinstance(action, list) else ([action] if action else [])
+        for action in actions:
             if args.tap and action.point is None:
                 # Delivered by the device already (BACK), nothing to tap.
                 pass
@@ -1252,6 +1265,8 @@ def main():
     parser.add_argument("--tap", action="store_true", help="send the recognized actions to LDPlayer")
     parser.add_argument("--ads", action=argparse.BooleanOptionalAction, default=True,
                         help="open gold reward ads automatically (default: enabled)")
+    parser.add_argument("--skill-rate", type=float, default=3.0,
+                        help="skill taps per second (default 3; 1 is one tap a second)")
     parser.add_argument("--auto-captcha", action="store_true",
                         help="automatically start and try one selection per CAPTCHA (requires --tap)")
     parser.add_argument("--upgrade-tower", action="store_true",
