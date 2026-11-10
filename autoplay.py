@@ -540,7 +540,7 @@ class Vision:
             if all(self.matches(rgb, name)
                    for name in ("ad_sheet_close", "ad_sheet_chevron", "ad_sheet_cta")):
                 return Screen("ad_end_sheet", (1257, 39), points=extra)
-            chevrons = [point for _, point in chevron_candidates(rgb)]
+            chevrons = tuple(point for _, point in chevron_candidates(rgb))
             if chevrons:
                 # A >> pages an end card forward; the X appears on the last one.
                 return Screen("ad_end_card", chevrons[0],

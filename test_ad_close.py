@@ -9,6 +9,8 @@ top-right, and a full-screen ad whose widgets are all unnamed so only the
 corner rule can find anything.
 """
 
+import numpy as np
+
 import ad_close
 import autoplay
 from PIL import Image
@@ -91,6 +93,34 @@ def check_labels():
     print(f"{len(ad_close.CLOSE_WORDS)} close words registered")
 
 
+def check_classify_types():
+    """classify() must never mix a list and a tuple in one Screen.
+
+    A TypeError here kills the whole run mid-ad, which is exactly what happened
+    when the chevron branch returned `list + tuple`. Every ad branch is exercised
+    with a picture that triggers it, and the resulting Screen is checked.
+    """
+    vision = autoplay.Vision(False)
+    blank = Image.new("RGB", (1280, 720), (16, 16, 16))
+
+    # Corners that look like a drawn X, plus a chevron-like pair of strokes.
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    for x, y in ((40, 40), (1240, 40), (40, 680), (1240, 680)):
+        frame[y - 12:y + 12, x - 12:x + 12] = 255
+    drawn = Image.fromarray(frame)
+
+    cases = [(blank, "blank"), (drawn, "drawn corners")]
+    for image, label in cases:
+        for watching in (True, False):
+            for ad_fg in (True, False):
+                screen = vision.classify(image, watching_ad=watching, ad_foreground=ad_fg)
+                assert isinstance(screen, autoplay.Screen), (label, screen)
+                assert isinstance(screen.points, tuple), \
+                    f"{label}: points became {type(screen.points).__name__}"
+                assert screen.point is None or isinstance(screen.point, tuple), label
+    print(f"{len(cases) * 4} classify() branches returned a well-formed Screen")
+
+
 if __name__ == "__main__":
     print("--- widgets ---")
     check_widgets()
@@ -100,4 +130,6 @@ if __name__ == "__main__":
     check_viewport()
     print("\n--- labels ---")
     check_labels()
+    print("\n--- classify types ---")
+    check_classify_types()
     print("\nPASS: all ad-closing layers behave as described")
