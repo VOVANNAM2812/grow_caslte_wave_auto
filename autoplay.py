@@ -426,12 +426,21 @@ def countdown_band(rgb):
             merged[-1][1] = run[1]
         else:
             merged.append(run)
-    # The countdown is words; the X beside it is one narrow glyph.
+    # The countdown is words; the X beside it is one narrow glyph. Status bar
+    # icons are also narrow, so a readout needs a phrase at least two words
+    # wide and a row of text at least 10 px tall.
     words = [run for run in merged if run[1] - run[0] >= 16]
-    if not words:
+    if len(words) < 2:
         return None
     rows = ink[:, words[0][0]:words[-1][1]]
     found = np.nonzero(rows.any(axis=1))[0]
+    if found.size and (found.max() - found.min()) < 10:
+        return None
+    # A countdown sits on the ad's own artwork. A white strip is the system
+    # status bar on a light screen, and its wifi and battery icons are not a
+    # counter.
+    if float(np.median(strip)) > 200:
+        return None
     return (words[0][0] + x0, words[-1][1] + x0, int(found.min()) + y0,
             int(found.max()) + y0)
 
@@ -443,35 +452,52 @@ def countdown_band(rgb):
 AD_RESUME, AD_CONFIRM_CLOSE = "resume", "confirm-close"
 
 
+def _rounded_solid(region):
+    """(point, fill) of the largest solid pill inside a region, or (None, 0).
+
+    An ad dialog's buttons are wide rounded rectangles of one strong colour,
+    filled almost edge to edge. A "solid shape" test alone also accepts a
+    loading spinner, so width and fill are both required.
+    """
+    saturated = ((region.max(axis=2) - region.min(axis=2)) > 55) & (region.min(axis=2) < 210)
+    rows = saturated.sum(axis=1)
+    if not rows.any():
+        return None, 0.0
+    filled = np.nonzero(rows > 0.35 * rows.max())[0]
+    if filled.size < 28:            # a button is at least this tall
+        return None, 0.0
+    band = saturated[filled.min():filled.max() + 1]
+    columns = band.sum(axis=0)
+    solid = np.nonzero(columns > 0.55 * band.shape[0])[0]
+    if solid.size < 120:            # a button is much wider than it is tall
+        return None, 0.0
+    fill = float(band[:, solid.min():solid.max() + 1].mean())
+    point = (int(solid.mean()), int(filled.mean()))
+    return point, fill
+
+
 def ad_warning_dialog(rgb):
     """(kind, point) when the ad asks whether to really close, else None.
 
-    The panel is a large pale card over the middle of the screen, carrying one
-    solid coloured button and one text-only button. The solid one continues the
-    ad: it is the safe answer, and the only one that keeps the reward.
+    The panel is a pale card, but it does not cover the whole screen: an ad
+    behind it, or the game behind that, still shows around the edges. Measured
+    on the real dialog the pale share is 0.45. A loading screen, which is pale
+    almost everywhere and only carries a spinner, is refused.
     """
     height, width = rgb.shape[:2]
-    centre = rgb[int(height * 0.20):int(height * 0.78), int(width * 0.20):int(width * 0.72)]
+    top, left = int(height * 0.20), int(width * 0.20)
+    centre = rgb[top:int(height * 0.78), left:int(width * 0.72)]
     if centre.size == 0:
         return None
     pale = float((centre.min(axis=2) > 225).mean())
-    if pale < 0.45:
+    if not 0.30 <= pale <= 0.80:
+        # Too little pale: not a dialog. Almost all pale: a loading screen or a
+        # blank page, whose only strong colour is a spinner.
         return None
-    saturated = ((centre.max(axis=2) - centre.min(axis=2)) > 55) & (centre.min(axis=2) < 210)
-    rows = saturated.sum(axis=1)
-    if not rows.any():
+    point, fill = _rounded_solid(centre)
+    if point is None or fill < 0.88:
         return None
-    solid_rows = np.nonzero(rows > 0.35 * rows.max())[0]
-    if solid_rows.size < 12:
-        return None
-    band = saturated[solid_rows.min():solid_rows.max() + 1]
-    columns = band.sum(axis=0)
-    solid_cols = np.nonzero(columns > 0.55 * band.shape[0])[0]
-    if solid_cols.size < 24:
-        return None
-    point = (int(solid_cols.mean()) + int(width * 0.20),
-             int(solid_rows.mean()) + int(height * 0.20))
-    return AD_RESUME, point
+    return AD_RESUME, (point[0] + left, point[1] + top)
 
 
 def in_payout_zone(point):

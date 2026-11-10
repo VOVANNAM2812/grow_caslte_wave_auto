@@ -112,7 +112,8 @@ Khi bật tự xem quảng cáo, tool xử lý như sau.
 2. Nếu cửa sổ quảng cáo đang hiển thị trong LDPlayer, tool tiếp tục theo dõi kể cả khi bạn khởi động giữa lượt xem. Trong lúc đó, tool tạm dừng vào trận, dùng kỹ năng, giải CAPTCHA và nâng tháp.
 3. Tool nhận các mẫu **Reward granted** có dấu **X** liền kề, gồm cả chữ trắng đi kèm dấu X đen trên nút tròn sáng. Tool cũng nhận diện mẫu hai thẻ **Learn More** và thẻ **Watch now** có nút đóng riêng. Một lượt thưởng có thể gồm nhiều màn kết thúc nối tiếp nhau.
 6. Tool **không bấm gì khi quảng cáo còn đếm ngược**. Dòng `Reward in N seconds` ở góc trên phải được đọc trước: dấu **X** lúc này vẫn hiện nhưng bấm vào sẽ hỏi *"You will lose your reward"*, và nút **Install** phổ biến trên các quảng cáo này mở thẳng trang tải app. Tool chờ đồng hồ hết rồi mới tìm nút đóng.
-7. Nếu hộp thoại **Close Video?** hiện ra, tool bấm nút **giữ thưởng** (nút đặc màu, thường là *RESUME VIDEO*), không bao giờ bấm *CLOSE VIDEO*. Hai nút được phân biệt bằng **độ đặc của màu**, không bằng chữ, nên không phụ thuộc ngôn ngữ.
+7. Màn hình **loading trắng** của game (khi quảng cáo vừa đóng) không bị nhận nhầm là hộp thoại: hộp thoại thật chỉ phủ khoảng 45% vùng giữa và nút của nó là một thanh rộng **191 × 54 px, đặc 93%**. Bánh xe loading chỉ **24 × 56 px, đặc 73%**, nên bị loại.
+8. Nếu hộp thoại **Close Video?** hiện ra, tool bấm nút **giữ thưởng** (nút đặc màu, thường là *RESUME VIDEO*), không bao giờ bấm *CLOSE VIDEO*. Hai nút được phân biệt bằng **độ đặc của màu**, không bằng chữ, nên không phụ thuộc ngôn ngữ.
 8. Tool không bao giờ bấm vào dải dưới màn hình (y ≥ 600) nơi quảng cáo đặt thanh **Install**.
 
 5. Khi ảnh không tìm được nút đóng, tool hỏi thẳng máy ảo theo ba lớp, mỗi lớp độc lập với thiết kế quảng cáo:

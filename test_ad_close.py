@@ -178,6 +178,46 @@ def check_running_ad_untouched():
     print("warning answered, and the counter is now waited out")
 
 
+def _frame(name):
+    """One of the real screenshots the reported bugs were found on."""
+    from pathlib import Path
+    return Image.open(Path(__file__).with_name("testdata") / name).convert("RGB") \
+        .resize((1280, 720), Image.Resampling.LANCZOS)
+
+
+def check_loading_screen_is_not_a_dialog():
+    """A pale loading screen must not be mistaken for the close warning.
+
+    testdata/loading.png is the frame that exposed this: the game's white
+    loading page with a blue spinner, shown while the ad is torn down.
+    ad_warning_dialog() saw 97% pale and one saturated blob, and answered
+    "keep watching ad" at the spinner every 1.5 s, forever.
+    """
+    loading = _frame("loading.png")
+    frame = np.asarray(loading, dtype=np.int16)
+
+    assert autoplay.ad_warning_dialog(frame) is None, \
+        "the loading screen was taken for the close warning"
+    assert autoplay.countdown_band(frame) is None, \
+        "a white status strip was read as a countdown"
+    vision = autoplay.Vision(False)
+    screen = vision.classify(loading, watching_ad=True, ad_foreground=True)
+    assert screen.name not in {"ad_warning", "ad_counting"}, screen.name
+
+    player = autoplay.Player("wave", lambda *a: None)
+    player.feed_ad(0.0, autoplay.Screen("ad_playing"), 0.0)
+    for time in (10.0, 11.5, 13.0, 20.0):
+        assert player.feed_ad(time, screen, time) is None, "tapped the spinner"
+    print("loading screen: no warning, no countdown, no tap")
+
+    # The real dialog, from the screenshot that showed it, must still be found.
+    counting = _frame("ad_counting.png")
+    found = autoplay.ad_warning_dialog(np.asarray(counting, dtype=np.int16))
+    assert found is not None and found[0] == autoplay.AD_RESUME, found
+    assert 700 < found[1][0] < 860 and 400 < found[1][1] < 500, found[1]
+    print(f"real dialog still answered at {found[1]}")
+
+
 if __name__ == "__main__":
     print("--- widgets ---")
     check_widgets()
@@ -191,4 +231,6 @@ if __name__ == "__main__":
     check_classify_types()
     print("\n--- a running ad ---")
     check_running_ad_untouched()
+    print("\n--- a loading screen ---")
+    check_loading_screen_is_not_a_dialog()
     print("\nPASS: all ad-closing layers behave as described")
