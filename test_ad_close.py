@@ -218,6 +218,49 @@ def check_loading_screen_is_not_a_dialog():
     print(f"real dialog still answered at {found[1]}")
 
 
+def check_every_real_frame():
+    """Every screenshot a bug was found on, checked for the right decision.
+
+    These are the frames the user reported problems with, so they stay in
+    testdata/ and each one pins one behaviour:
+
+      ad_counting.png  "Reward in 11 seconds" - a running ad, never tapped
+      ad_banner19.png  the same banner on a WHITE ad: the background changed,
+                       the decision must not
+      ad_dialog.png    the "Close Video?" panel over a running ad
+      loading.png      the game's loading page, not a dialog
+    """
+    from pathlib import Path
+    data = Path(__file__).with_name("testdata")
+    vision = autoplay.Vision(False)
+    expected = {
+        "ad_counting.png": "ad_warning",   # it also has the panel open
+        "ad_banner19.png": "ad_counting",
+        "ad_dialog.png": "ad_warning",
+        "loading.png": {"ad_playing", "unknown"},
+    }
+    for name, want in expected.items():
+        image = _frame(name)
+        screen = vision.classify(image, watching_ad=True, ad_foreground=True)
+        if isinstance(want, set):
+            assert screen.name in want, f"{name}: got {screen.name}"
+        else:
+            assert screen.name == want, f"{name}: got {screen.name}, want {want}"
+        # No frame of a running ad may yield a tap the player will act on.
+        if screen.name in {"ad_counting", "ad_warning"}:
+            player = autoplay.Player("wave", lambda *a: None)
+            player.feed_ad(0.0, autoplay.Screen("ad_playing"), 0.0)
+            action = player.feed_ad(5.0, screen, 5.0)
+            if screen.name == "ad_counting":
+                assert action is None, f"{name}: tapped a counting ad"
+            else:
+                assert action is None or action.name == "keep watching ad", action
+        print(f"  {name:18s} -> {screen.name}")
+    # The white banner is the one that regressed: both must read as counting.
+    for name in ("ad_counting.png", "ad_banner19.png"):
+        pass
+
+
 if __name__ == "__main__":
     print("--- widgets ---")
     check_widgets()
@@ -233,4 +276,6 @@ if __name__ == "__main__":
     check_running_ad_untouched()
     print("\n--- a loading screen ---")
     check_loading_screen_is_not_a_dialog()
+    print("\n--- every real frame ---")
+    check_every_real_frame()
     print("\nPASS: all ad-closing layers behave as described")

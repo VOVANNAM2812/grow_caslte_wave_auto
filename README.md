@@ -111,14 +111,15 @@ Khi bật tự xem quảng cáo, tool xử lý như sau.
 1. Sau khi thắng, tool chờ hộp thưởng xuất hiện trước khi đánh tiếp. Tool nhận diện biểu tượng vàng và cả hai cách hiển thị nút **GET**, có hoặc không có dòng đếm ngược, rồi bấm nút một lần.
 2. Nếu cửa sổ quảng cáo đang hiển thị trong LDPlayer, tool tiếp tục theo dõi kể cả khi bạn khởi động giữa lượt xem. Trong lúc đó, tool tạm dừng vào trận, dùng kỹ năng, giải CAPTCHA và nâng tháp.
 3. Tool nhận các mẫu **Reward granted** có dấu **X** liền kề, gồm cả chữ trắng đi kèm dấu X đen trên nút tròn sáng. Tool cũng nhận diện mẫu hai thẻ **Learn More** và thẻ **Watch now** có nút đóng riêng. Một lượt thưởng có thể gồm nhiều màn kết thúc nối tiếp nhau.
-6. Tool **không bấm gì khi quảng cáo còn đếm ngược**. Dòng `Reward in N seconds` ở góc trên phải được đọc trước: dấu **X** lúc này vẫn hiện nhưng bấm vào sẽ hỏi *"You will lose your reward"*, và nút **Install** phổ biến trên các quảng cáo này mở thẳng trang tải app. Tool chờ đồng hồ hết rồi mới tìm nút đóng.
-7. Màn hình **loading trắng** của game (khi quảng cáo vừa đóng) không bị nhận nhầm là hộp thoại: hộp thoại thật chỉ phủ khoảng 45% vùng giữa và nút của nó là một thanh rộng **191 × 54 px, đặc 93%**. Bánh xe loading chỉ **24 × 56 px, đặc 73%**, nên bị loại.
+6. Băng **`Reward in N seconds`** được đọc trên nền bất kỳ: một quảng cáo vẽ băng nền trắng, quảng cáo khác vẽ nền xám. Nền được đo theo từng cột, và băng phải có **dấu X vẽ bên phải** thì mới được coi là băng đếm ngược — nhờ vậy thanh trạng thái Android có icon wifi/pin không bị nhận nhầm.
+7. Tool **không bấm gì khi quảng cáo còn đếm ngược**. Dòng `Reward in N seconds` ở góc trên phải được đọc trước: dấu **X** lúc này vẫn hiện nhưng bấm vào sẽ hỏi *"You will lose your reward"*, và nút **Install** phổ biến trên các quảng cáo này mở thẳng trang tải app. Tool chờ đồng hồ hết rồi mới tìm nút đóng.
+7b. Màn hình **loading trắng** của game (khi quảng cáo vừa đóng) không bị nhận nhầm là hộp thoại: hộp thoại thật chỉ phủ khoảng 45% vùng giữa và nút của nó là một thanh rộng **191 × 54 px, đặc 93%**. Bánh xe loading chỉ **24 × 56 px, đặc 73%**, nên bị loại.
 8. Nếu hộp thoại **Close Video?** hiện ra, tool bấm nút **giữ thưởng** (nút đặc màu, thường là *RESUME VIDEO*), không bao giờ bấm *CLOSE VIDEO*. Hai nút được phân biệt bằng **độ đặc của màu**, không bằng chữ, nên không phụ thuộc ngôn ngữ.
-8. Tool không bao giờ bấm vào dải dưới màn hình (y ≥ 600) nơi quảng cáo đặt thanh **Install**.
+9. Tool không bao giờ bấm vào dải dưới màn hình (y ≥ 600) nơi quảng cáo đặt thanh **Install**.
 
 5. Khi ảnh không tìm được nút đóng, tool hỏi thẳng máy ảo theo ba lớp, mỗi lớp độc lập với thiết kế quảng cáo:
    - **Đọc cây giao diện** bằng `uiautomator dump`, lấy đúng toạ độ `bounds` của phần tử có chữ `close`/`đóng`/`skip`/`bỏ qua`/`×`/`✕` hoặc nút nhỏ ở góc trên. Cách này bấm chính xác trên cả màn hình ngang lẫn quảng cáo xoay dọc, và không phụ thuộc ngôn ngữ.
-   - **Dò hình học** nút **X** và mũi tên **»**/**>|** ở bốn góc, dùng được với quảng cáo vẽ bằng Canvas/WebGL không lộ phần tử giao diện.
+   - **Dò hình học** nút **X** ở bốn góc, dùng được với quảng cáo vẽ bằng Canvas/WebGL không lộ phần tử giao diện. Mũi tên **»** không được dò: nó là hình vẽ nên xuất hiện khắp nơi (tranh mê cung, góc trắng), và đã gây bấm nhầm vào **chỗ trống** hai lần. Khi quảng cáo chỉ có **»**, tool để lớp thiết bị xử lý.
    - **Gửi phím BACK** (`keyevent 4`) khi quảng cáo đã hết giờ hoặc SDK tự mở bảng Google Play đè lên. Quảng cáo còn đếm ngược sẽ tự chặn phím này, nên gửi BACK không làm mất lượt xem.
 
    Tool nhận diện **mọi Activity quảng cáo**, không chỉ AdMob: UnityAds, AppLovin, IronSource, Mintegral, Vungle, ByteDance, AdColony, Chartboost, Facebook Ads và Google Play. Khung hình dọc 9:16 (720 × 1280) cũng được phân tích thay vì bị loại bỏ.

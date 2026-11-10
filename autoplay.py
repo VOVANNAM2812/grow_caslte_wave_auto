@@ -362,87 +362,168 @@ def close_candidates(rgb):
 
 
 def chevron_candidates(rgb):
-    """The >> / >| skip control that some ad layouts show before the X.
+    """The >> / >| skip arrow, as a tap point, best first.
 
-    AdMob's end cards often hide the X until the last page, and offer a double
-    chevron to page forward. It is drawn, not a widget, so it is found by shape:
-    two parallel strokes leaning the same way, in the top corners.
+    Some end cards hide the X behind a paged carousel and only offer this. The
+    arrow is two parallel strokes of one colour on a plain field, so a colour
+    run plus the gap between the two strokes is required. Matching "diagonal
+    texture" instead matched maze artwork and the flat background of an ad,
+    which is how a tap landed at (1169, 55) on a blank white corner.
     """
     found = []
     for corner, (x0, x1, y0, y1) in CLOSE_CORNERS.items():
         region = rgb[y0:y1, x0:x1]
-        gray = region.mean(axis=2).astype(np.float32) if region.ndim == 3 else region.astype(np.float32)
-        for polarity in (1, -1):
-            ink = gray * polarity
-            # A chevron is a diagonal band; count how much of each column is lit
-            # and look for the two humps a ">>" produces.
-            columns = (ink > ink.mean() + 0.6 * ink.std()).sum(axis=0).astype(np.float32)
-            if columns.size < 12 or columns.max() < 4:
+        if region.size == 0 or min(region.shape[:2]) < 20:
+            continue
+        flat = region.reshape(-1, 3).astype(np.int32)
+        colours, counts = np.unique(flat // 24, axis=0, return_counts=True)
+        for index in np.argsort(-counts)[:6]:
+            share = counts[index] / flat.shape[0]
+            # The arrow is a small mark. Anything covering a quarter of the
+            # corner is the background it is drawn on.
+            if not 0.004 <= share <= 0.25:
                 continue
-            peaks = 0
-            for i in range(2, columns.size - 2):
-                if (columns[i] > 0.75 * columns.max()
-                        and columns[i] >= columns[i - 1] and columns[i] >= columns[i + 1]):
-                    peaks += 1
-            if peaks < 2:
+            mask = np.all(flat // 24 == colours[index], axis=1).reshape(region.shape[:2])
+            if mask.sum() < 90:
                 continue
-            weight = float(columns.std() / max(columns.mean(), 1e-6))
-            if weight < 0.9:
+            lit = np.nonzero(mask.any(axis=0))[0]
+            rows = np.nonzero(mask.any(axis=1))[0]
+            if lit.size < 10 or rows.size < 10:
                 continue
-            centre = (x0 + x1) // 2, (y0 + y1) // 2
-            found.append((weight, centre))
+            # Two strokes with a clear gap between them: that is the shape of >>.
+            # A ring, a logo or a patch of texture has no such gap.
+            band = mask[rows.min():rows.max() + 1, lit.min():lit.max() + 1]
+            columns = band.sum(axis=0)
+            gaps = np.nonzero(columns == 0)[0]
+            gaps = gaps[(gaps > band.shape[1] * 0.25) & (gaps < band.shape[1] * 0.75)]
+            if gaps.size < 2:
+                continue
+            found.append((int(counts[index]), ((x0 + lit.min() + x0 + lit.max()) // 2,
+                                               (y0 + y1) // 2)))
     return sorted(found, key=lambda item: -item[0])
 
 
 def countdown_band(rgb):
-    """The "Reward in 11 seconds" strip, as (left, right, top, bottom).
+    """The "Reward in N seconds" banner, as (left, right, top, bottom).
 
-    Every rewarded ad puts its remaining time in the top-right corner. Reading
-    it is the only way to tell an ad that is still counting from one that has
-    finished, because both show the same X. Returns None when the strip is
-    empty, which is what an end card looks like.
+    Reading the remaining time is the only way to tell an ad that is still
+    counting from one that has finished: both carry the same X. Returns None
+    when there is no banner, which is what an end card looks like.
+
+    Two things in this corner are not the banner and must be dropped first: a
+    dark window edge across the top of the capture, and a system status bar of
+    small icons. The text is found as one run of rows carrying a sentence, and
+    the banner is confirmed by the X drawn to its right.
     """
     height, width = rgb.shape[:2]
     x0, y0 = int(width * 0.70), int(height * 0.015)
     x1, y1 = int(width * 0.985), int(height * 0.125)
-    strip = rgb[y0:y1, x0:x1].mean(axis=2)
-    if strip.size == 0:
+    strip = rgb[y0:y1, x0:x1]
+    if strip.size == 0 or strip.shape[0] < 20:
         return None
-    ink = np.abs(strip - np.median(strip)) > 42
-    columns = ink.sum(axis=0)
-    runs, start = [], None
+    grey = strip.mean(axis=2)
+    # Ink is darker than the banner behind it. The banner's colour is not fixed
+    # (one ad paints it white, another mid grey), so it is taken per column.
+    ink = (np.percentile(grey, 92, axis=0)[None, :] - grey) > 42
+
+    # 1. keep only the row band that looks like a sentence: tall enough to be
+    #    text, and covering a wide stretch of the strip.
+    row_ink = ink.sum(axis=1)
+    bands, start = [], None
+    for index, value in enumerate(row_ink >= 3):
+        if value and start is None:
+            start = index
+        elif not value and start is not None:
+            bands.append([start, index])
+            start = None
+    if start is not None:
+        bands.append([start, len(row_ink)])
+    text_band = None
+    for band in bands:
+        tall = band[1] - band[0]
+        if tall < 10:
+            continue                    # a status bar icon, or a 1 px line
+        covered = ink[band[0]:band[1]].any(axis=0)
+        width_covered = int(np.nonzero(covered)[0][-1] - np.nonzero(covered)[0][0]) \
+            if covered.any() else 0
+        if width_covered < 110:
+            continue                    # icons, not words
+        if text_band is None or tall > text_band[1] - text_band[0]:
+            text_band = band
+    if text_band is None:
+        return None
+
+    # 2. Group the band into words, separated by real gaps. The X is its own
+    #    group, so the words keep their own right edge and the glyph can be
+    #    judged as something beside the text rather than part of it.
+    columns = (ink[text_band[0]:text_band[1]].sum(axis=0) >= 2).astype(np.int8)
+    groups, start = [], None
     for index, value in enumerate(columns):
         if value and start is None:
             start = index
         elif not value and start is not None:
-            if index - start >= 6:
-                runs.append([start, index])
+            groups.append([start, index])
             start = None
-    if start is not None and len(columns) - start >= 6:
-        runs.append([start, len(columns)])
-    merged = []
-    for run in runs:
-        if merged and run[0] - merged[-1][1] < 14:
-            merged[-1][1] = run[1]
-        else:
-            merged.append(run)
-    # The countdown is words; the X beside it is one narrow glyph. Status bar
-    # icons are also narrow, so a readout needs a phrase at least two words
-    # wide and a row of text at least 10 px tall.
-    words = [run for run in merged if run[1] - run[0] >= 16]
-    if len(words) < 2:
+    if start is not None:
+        groups.append([start, len(columns)])
+    if len(groups) < 3:
+        return None                     # a lone glyph, or no sentence at all
+    # The X is the last group, so the sentence runs from the first group to the
+    # one before it.
+    left, right = groups[0][0], groups[-2][1]
+    if right - left < 110:
+        return None                     # too short to read "Reward in N seconds"
+    # The banner carries the X the ad hangs its close control on; a status bar
+    # has none. The glyph is not looked up through CLOSE_CORNERS because a
+    # banner that sits a little low leaves it outside every corner box.
+    if not _cross_beside(ink, right):
         return None
-    rows = ink[:, words[0][0]:words[-1][1]]
-    found = np.nonzero(rows.any(axis=1))[0]
-    if found.size and (found.max() - found.min()) < 10:
-        return None
-    # A countdown sits on the ad's own artwork. A white strip is the system
-    # status bar on a light screen, and its wifi and battery icons are not a
-    # counter.
-    if float(np.median(strip)) > 200:
-        return None
-    return (words[0][0] + x0, words[-1][1] + x0, int(found.min()) + y0,
-            int(found.max()) + y0)
+    return (left + x0, right + x0, int(text_band[0]) + y0, int(text_band[1]) + y0)
+
+
+def _cross_beside(ink, text_right):
+    """True when a drawn X sits to the right of the words.
+
+    The glyph is two diagonals crossing, so each diagonal row of a small square
+    is mostly ink while its four corners are clear. That shape is what tells the
+    ad's X apart from the icons of a system status bar.
+    """
+    height, width = ink.shape
+    region = ink[:, max(0, text_right - 6):]
+    if region.shape[1] < 12 or height < 20:
+        return False
+    span = 8
+    integral = np.pad(region.astype(np.int32).cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+
+    def box(top, left, bottom, right):
+        return (integral[bottom + 1, right + 1] - integral[top, right + 1]
+                - integral[bottom + 1, left] + integral[top, left])
+
+    rows = range(span, height - span)
+    for row in rows:
+        for column in range(span, region.shape[1] - span):
+            # The two diagonals of the square, plus its corners.
+            first = box(row - span, column - span, row + span, column + span)
+            if first < 2 * span:            # not enough ink to be an X
+                continue
+            corners = (int(region[row - span, column - span])
+                       + int(region[row - span, column + span])
+                       + int(region[row + span, column - span])
+                       + int(region[row + span, column + span]))
+            centre = box(row - 1, column - 1, row + 1, column + 1)
+            if corners <= 1 and centre >= 3:
+                return True
+    return False
+
+
+def _onscreen(region, left, top):
+    """Place a crop back where it was cut from, so an X scores at its real spot."""
+    padded = np.zeros((720, 1280, 3), dtype=np.int16)
+    height = min(region.shape[0], 720 - top)
+    width = min(region.shape[1], 1280 - left)
+    if height > 0 and width > 0:
+        padded[top:top + height, left:left + width] = region[:height, :width]
+    return padded
 
 
 # Buttons of the "Close Video? / You will lose your reward" warning. Tapping
@@ -679,14 +760,12 @@ class Vision:
             if all(self.matches(rgb, name)
                    for name in ("ad_sheet_close", "ad_sheet_chevron", "ad_sheet_cta")):
                 return Screen("ad_end_sheet", (1257, 39), points=extra)
-            chevrons = tuple(point for _, point in chevron_candidates(rgb))
-            if chevrons and not payout_pill(rgb):
-                # A >> pages an end card forward; the X appears on the last one.
-                # It is only trusted when no Install bar is over the screen: a
-                # busy ad picture produces chevron shapes all the time, and the
-                # bottom-left one lands on artwork that opens the store.
-                return Screen("ad_end_card", chevrons[0],
-                              points=chevrons[1:] + extra)
+            # No chevron branch. A ">>" is drawn artwork, and artwork is
+            # everywhere: on maze adverts, on end cards, on a blank corner. It
+            # produced taps at (110, 665) and (1169, 55) on nothing at all. When
+            # the ad offers only a chevron, the picture is left alone and the
+            # device layer (widget dump, then BACK once the counter is gone)
+            # is what closes it.
             if self.ad_chrome(rgb) and extra:
                 # A close button at an unexpected spot with an unfamiliar
                 # background still leaves a finished ad that can be dismissed.
