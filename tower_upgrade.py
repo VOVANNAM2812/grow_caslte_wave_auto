@@ -16,7 +16,9 @@ LV_UP = (896, 470)
 @dataclass(frozen=True)
 class Action:
     name: str
-    point: tuple[int, int]
+    # None means the action is delivered by the device itself (a BACK key),
+    # which has no screen coordinate to tap.
+    point: tuple[int, int] | None
     charge: tuple[int, int, int] | None = None
 
 

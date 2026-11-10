@@ -14,6 +14,8 @@ from PIL import Image, ImageOps
 
 from captcha import VIEWPORT
 from ldplayer_captcha import run, watch
+
+import ad_close
 from tower_upgrade import Action, TowerUpgrade, lock_journal
 from windows_video import read_video
 
@@ -74,8 +76,17 @@ CAPTCHA_PAUSE = 4
 
 
 def viewport(image):
+    """Normalise the game viewport, or None when the picture is not the game.
+
+    Ads can lock themselves to portrait, and 720x1280 is exactly 9:16, not 16:9.
+    Refusing that size meant the close button was never even looked for on a
+    rotated ad, so an upright frame is now accepted too: every template is
+    matched against corner regions, and a portrait ad simply fails those
+    matches, which is what the ad path expects.
+    """
     width, height = image.size
-    if abs(width / height / (16 / 9) - 1) > 0.03:
+    ratio = width / height
+    if abs(ratio / (16 / 9) - 1) > 0.03 and abs(ratio / (9 / 16) - 1) > 0.03:
         return None
     return image.convert("RGB").resize(VIEWPORT, Image.Resampling.BILINEAR)
 
@@ -349,6 +360,39 @@ def close_candidates(rgb):
     return found
 
 
+def chevron_candidates(rgb):
+    """The >> / >| skip control that some ad layouts show before the X.
+
+    AdMob's end cards often hide the X until the last page, and offer a double
+    chevron to page forward. It is drawn, not a widget, so it is found by shape:
+    two parallel strokes leaning the same way, in the top corners.
+    """
+    found = []
+    for corner, (x0, x1, y0, y1) in CLOSE_CORNERS.items():
+        region = rgb[y0:y1, x0:x1]
+        gray = region.mean(axis=2).astype(np.float32) if region.ndim == 3 else region.astype(np.float32)
+        for polarity in (1, -1):
+            ink = gray * polarity
+            # A chevron is a diagonal band; count how much of each column is lit
+            # and look for the two humps a ">>" produces.
+            columns = (ink > ink.mean() + 0.6 * ink.std()).sum(axis=0).astype(np.float32)
+            if columns.size < 12 or columns.max() < 4:
+                continue
+            peaks = 0
+            for i in range(2, columns.size - 2):
+                if (columns[i] > 0.75 * columns.max()
+                        and columns[i] >= columns[i - 1] and columns[i] >= columns[i + 1]):
+                    peaks += 1
+            if peaks < 2:
+                continue
+            weight = float(columns.std() / max(columns.mean(), 1e-6))
+            if weight < 0.9:
+                continue
+            centre = (x0 + x1) // 2, (y0 + y1) // 2
+            found.append((weight, centre))
+    return sorted(found, key=lambda item: -item[0])
+
+
 class Vision:
     def __init__(self, upgrade_tower=False):
         with np.load(Path(__file__).with_name("play_templates.npz"), allow_pickle=False) as atlas:
@@ -496,6 +540,11 @@ class Vision:
             if all(self.matches(rgb, name)
                    for name in ("ad_sheet_close", "ad_sheet_chevron", "ad_sheet_cta")):
                 return Screen("ad_end_sheet", (1257, 39), points=extra)
+            chevrons = [point for _, point in chevron_candidates(rgb)]
+            if chevrons:
+                # A >> pages an end card forward; the X appears on the last one.
+                return Screen("ad_end_card", chevrons[0],
+                              points=chevrons[1:] + extra)
             if self.ad_chrome(rgb) and extra:
                 # A close button at an unexpected spot with an unfamiliar
                 # background still leaves a finished ad that can be dismissed.
@@ -564,6 +613,7 @@ class Player:
         self.ad_warned = False
         self.reward_label_seen = False
         self.ad_close_attempts = {}
+        self.last_device_close = float("-inf")
         self.ad_taps = 0
         self.ad_tried_points = []
         self.ad_seen = set()
@@ -641,8 +691,32 @@ class Player:
             self.ad_warned = True
         return None
 
+    def device_close(self, adb, serial, time):
+        """Close an ad through the device, in three layers of certainty.
+
+        A picture can only show a close button that is drawn the way the
+        templates expect. These three reach the ones it cannot: a real widget at
+        any position and in any language, a drawn chevron that pages the ad
+        forward, and BACK for an end card that shows no control at all.
+        """
+        if time - self.last_device_close < 2.5:
+            return None
+        self.last_device_close = time
+        point = ad_close.close_from_widgets(adb, serial)
+        if point is not None:
+            return Action("close ad by widget", point)
+        # Nothing to tap: either the ad has not offered its X yet, or the SDK is
+        # showing a Play Store sheet on top. BACK is safe here because an ad
+        # that is still counting down swallows the key itself.
+        if time - self.ad_since >= self.ad_minimum() + 2:
+            ad_close.send_back(adb, serial)
+            return Action("close ad with BACK", None)
+        return None
+
     def close_stalled_ad(self, time, screen, still_for):
         """Keep trying visible X buttons when a finished ad refuses to close."""
+        if self.ad == "device":
+            return None
         if not self.ad or still_for < STILL_FRAME:
             return None
         if time - self.ad_since < self.ad_minimum():
@@ -819,16 +893,23 @@ def play(args, report, journal):
             screen = vision.classify(viewport(original), watching_ad=player.ad is not None)
         else:
             activity = foreground_activity(adb, args.serial)
+            # Any ad SDK's window owns the frame, not only AdMob's AdActivity:
+            # UnityAds, AppLovin, IronSource and Mintegral each use their own.
+            ad_window = ad_close.ad_in_foreground(adb, args.serial)
             # An ad can show footage of a game. Its Android window owns the
             # frame until it closes, even if the image resembles a game screen.
             screen = (vision.classify(viewport(original), watching_ad=player.ad is not None,
-                                      ad_foreground=activity == AD_ACTIVITY)
-                      if activity else Screen("unfocused"))
+                                      ad_foreground=ad_window)
+                      if (activity or ad_window) else Screen("unfocused"))
         was_paused = player.paused
         action = player.feed(time, screen)
         if player.ad and not action:
             # A playing ad moves; a stalled one is a still frame still showing X.
             action = player.close_stalled_ad(time, screen, still_for)
+            if not action and not args.video and still_for >= STILL_FRAME:
+                # The picture could not find a close button. Ask the device
+                # instead: a real widget, a drawn chevron, or BACK.
+                action = player.device_close(adb, args.serial, time)
         if args.auto_captcha and player.paused and not was_paused:
             attempt_started = monotonic()
             limit = min(CAPTCHA_WINDOW, args.seconds - time) if args.seconds else CAPTCHA_WINDOW
@@ -856,7 +937,10 @@ def play(args, report, journal):
             else:
                 report(time + monotonic() - attempt_started, "CAPTCHA: waiting for manual solution")
         if action:
-            if args.tap:
+            if args.tap and action.point is None:
+                # Delivered by the device already (BACK), nothing to tap.
+                pass
+            elif args.tap:
                 if action.charge is not None:
                     raw = run(adb, "-s", args.serial, "exec-out", "screencap", "-p")
                     with Image.open(BytesIO(raw)) as check:

@@ -111,6 +111,13 @@ Khi bật tự xem quảng cáo, tool xử lý như sau.
 1. Sau khi thắng, tool chờ hộp thưởng xuất hiện trước khi đánh tiếp. Tool nhận diện biểu tượng vàng và cả hai cách hiển thị nút **GET**, có hoặc không có dòng đếm ngược, rồi bấm nút một lần.
 2. Nếu cửa sổ quảng cáo đang hiển thị trong LDPlayer, tool tiếp tục theo dõi kể cả khi bạn khởi động giữa lượt xem. Trong lúc đó, tool tạm dừng vào trận, dùng kỹ năng, giải CAPTCHA và nâng tháp.
 3. Tool nhận các mẫu **Reward granted** có dấu **X** liền kề, gồm cả chữ trắng đi kèm dấu X đen trên nút tròn sáng. Tool cũng nhận diện mẫu hai thẻ **Learn More** và thẻ **Watch now** có nút đóng riêng. Một lượt thưởng có thể gồm nhiều màn kết thúc nối tiếp nhau.
+5. Khi ảnh không tìm được nút đóng, tool hỏi thẳng máy ảo theo ba lớp, mỗi lớp độc lập với thiết kế quảng cáo:
+   - **Đọc cây giao diện** bằng `uiautomator dump`, lấy đúng toạ độ `bounds` của phần tử có chữ `close`/`đóng`/`skip`/`bỏ qua`/`×`/`✕` hoặc nút nhỏ ở góc trên. Cách này bấm chính xác trên cả màn hình ngang lẫn quảng cáo xoay dọc, và không phụ thuộc ngôn ngữ.
+   - **Dò hình học** nút **X** và mũi tên **»**/**>|** ở bốn góc, dùng được với quảng cáo vẽ bằng Canvas/WebGL không lộ phần tử giao diện.
+   - **Gửi phím BACK** (`keyevent 4`) khi quảng cáo đã hết giờ hoặc SDK tự mở bảng Google Play đè lên. Quảng cáo còn đếm ngược sẽ tự chặn phím này, nên gửi BACK không làm mất lượt xem.
+
+   Tool nhận diện **mọi Activity quảng cáo**, không chỉ AdMob: UnityAds, AppLovin, IronSource, Mintegral, Vungle, ByteDance, AdColony, Chartboost, Facebook Ads và Google Play. Khung hình dọc 9:16 (720 × 1280) cũng được phân tích thay vì bị loại bỏ.
+
 4. Tool bấm **X** khi nhận diện được và thử lại sau ít nhất 1,5 giây nếu nút vẫn hiện. Tool thử tối đa sáu lần cho mỗi dạng màn kết thúc. Nếu quảng cáo đứng yên mà chưa đóng được, tool tự tìm dấu **X** ở cả bốn góc màn hình, không phụ thuộc vị trí hay màu nền, và lần lượt bấm các vị trí tìm thấy. Nhờ vậy nút **X** nằm chỗ khác hoặc có màu nền khác vẫn đóng được. Nếu cần đóng tay, tool chờ đến khi màn game hiển thị ổn định rồi tiếp tục. Game tự cộng vàng. Log `gold HUD changed` cho biết vùng hiển thị số vàng đã thay đổi sau khi quay về.
 
 ### Tự giải CAPTCHA trong auto play
