@@ -121,6 +121,63 @@ def check_classify_types():
     print(f"{len(cases) * 4} classify() branches returned a well-formed Screen")
 
 
+def check_running_ad_untouched():
+    """A live ad with a counter must not be tapped, by any path.
+
+    The screenshot this is built from showed "Reward in 11 seconds" with a big
+    Install bar over the bottom of the ad. Tapping the X there asks whether to
+    abandon the reward, and the taps that followed opened a store page. So the
+    frame is rebuilt from the measurements taken off that screenshot and every
+    route to a tap is checked.
+    """
+    rgb = np.zeros((720, 1280, 3), dtype=np.int16)
+    rgb[:, :, :] = 148            # the ad's flat grey background
+    # countdown words in the top right
+    rgb[36:50, 1054:1133] = 40
+    rgb[36:50, 1150:1232] = 40
+    # the X beside them
+    for step in range(17):
+        rgb[36 + step, 1250 + step // 2] = 30
+        rgb[36 + step, 1260 - step // 2] = 30
+    # the Install bar across the bottom
+    rgb[640:718, 461:1279] = 45
+    live = Image.fromarray(rgb.astype(np.uint8))
+
+    assert autoplay.countdown_band(np.asarray(live, dtype=np.int16)) is not None, \
+        "the countdown was not read, so a live ad looks finished"
+    assert autoplay.payout_pill(np.asarray(live, dtype=np.int16)), "Install bar missed"
+    assert autoplay.in_payout_zone((110, 665)), "bottom-left corner not protected"
+
+    vision = autoplay.Vision(False)
+    screen = vision.classify(live, watching_ad=True, ad_foreground=True)
+    assert screen.name == "ad_counting", \
+        f"a live ad was classified as '{screen.name}', which invites a tap"
+
+    player = autoplay.Player("wave", lambda *a: None)
+    player.feed_ad(0.0, autoplay.Screen("ad_playing"), 0.0)
+    assert player.feed_ad(1.0, screen, 1.0) is None, "tapped a counting ad"
+    assert player.close_stalled_ad(3.0, screen, 5.0) is None, "guessed a spot"
+    assert player.device_close(None, None, 9.0) is None, "reached the device"
+    print("live ad with counter: no tap from any path")
+
+    # The warning dialog must be answered with the button that keeps the reward.
+    warn = np.zeros((720, 1280, 3), dtype=np.int16)
+    warn[:, :, :] = 148
+    warn[227:515, 405:890] = 250                      # the pale panel
+    warn[426:480, 679:869] = (60, 130, 245)           # the solid blue button
+    warning = Image.fromarray(warn.astype(np.uint8))
+    found = autoplay.ad_warning_dialog(np.asarray(warning, dtype=np.int16))
+    assert found is not None and found[0] == autoplay.AD_RESUME, found
+    assert 700 < found[1][0] < 850 and 400 < found[1][1] < 500, found[1]
+    print(f"warning dialog: answers RESUME at {found[1]} (never CLOSE VIDEO)")
+
+    screen = vision.classify(warning, watching_ad=True, ad_foreground=True)
+    assert screen.name == "ad_warning" and screen.sub == autoplay.AD_RESUME, screen
+    action = player.feed_ad(12.0, screen, 1.0)
+    assert action is not None and action.point == found[1], action
+    print("warning answered, and the counter is now waited out")
+
+
 if __name__ == "__main__":
     print("--- widgets ---")
     check_widgets()
@@ -132,4 +189,6 @@ if __name__ == "__main__":
     check_labels()
     print("\n--- classify types ---")
     check_classify_types()
+    print("\n--- a running ad ---")
+    check_running_ad_untouched()
     print("\nPASS: all ad-closing layers behave as described")

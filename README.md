@@ -111,6 +111,10 @@ Khi bật tự xem quảng cáo, tool xử lý như sau.
 1. Sau khi thắng, tool chờ hộp thưởng xuất hiện trước khi đánh tiếp. Tool nhận diện biểu tượng vàng và cả hai cách hiển thị nút **GET**, có hoặc không có dòng đếm ngược, rồi bấm nút một lần.
 2. Nếu cửa sổ quảng cáo đang hiển thị trong LDPlayer, tool tiếp tục theo dõi kể cả khi bạn khởi động giữa lượt xem. Trong lúc đó, tool tạm dừng vào trận, dùng kỹ năng, giải CAPTCHA và nâng tháp.
 3. Tool nhận các mẫu **Reward granted** có dấu **X** liền kề, gồm cả chữ trắng đi kèm dấu X đen trên nút tròn sáng. Tool cũng nhận diện mẫu hai thẻ **Learn More** và thẻ **Watch now** có nút đóng riêng. Một lượt thưởng có thể gồm nhiều màn kết thúc nối tiếp nhau.
+6. Tool **không bấm gì khi quảng cáo còn đếm ngược**. Dòng `Reward in N seconds` ở góc trên phải được đọc trước: dấu **X** lúc này vẫn hiện nhưng bấm vào sẽ hỏi *"You will lose your reward"*, và nút **Install** phổ biến trên các quảng cáo này mở thẳng trang tải app. Tool chờ đồng hồ hết rồi mới tìm nút đóng.
+7. Nếu hộp thoại **Close Video?** hiện ra, tool bấm nút **giữ thưởng** (nút đặc màu, thường là *RESUME VIDEO*), không bao giờ bấm *CLOSE VIDEO*. Hai nút được phân biệt bằng **độ đặc của màu**, không bằng chữ, nên không phụ thuộc ngôn ngữ.
+8. Tool không bao giờ bấm vào dải dưới màn hình (y ≥ 600) nơi quảng cáo đặt thanh **Install**.
+
 5. Khi ảnh không tìm được nút đóng, tool hỏi thẳng máy ảo theo ba lớp, mỗi lớp độc lập với thiết kế quảng cáo:
    - **Đọc cây giao diện** bằng `uiautomator dump`, lấy đúng toạ độ `bounds` của phần tử có chữ `close`/`đóng`/`skip`/`bỏ qua`/`×`/`✕` hoặc nút nhỏ ở góc trên. Cách này bấm chính xác trên cả màn hình ngang lẫn quảng cáo xoay dọc, và không phụ thuộc ngôn ngữ.
    - **Dò hình học** nút **X** và mũi tên **»**/**>|** ở bốn góc, dùng được với quảng cáo vẽ bằng Canvas/WebGL không lộ phần tử giao diện.

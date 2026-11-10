@@ -112,6 +112,7 @@ class Screen:
     level: int | None = None
     cost: int | None = None
     points: tuple = ()
+    sub: str | None = None
 
 
 def color_runs(mask, minimum, maximum=10_000):
@@ -393,6 +394,111 @@ def chevron_candidates(rgb):
     return sorted(found, key=lambda item: -item[0])
 
 
+def countdown_band(rgb):
+    """The "Reward in 11 seconds" strip, as (left, right, top, bottom).
+
+    Every rewarded ad puts its remaining time in the top-right corner. Reading
+    it is the only way to tell an ad that is still counting from one that has
+    finished, because both show the same X. Returns None when the strip is
+    empty, which is what an end card looks like.
+    """
+    height, width = rgb.shape[:2]
+    x0, y0 = int(width * 0.70), int(height * 0.015)
+    x1, y1 = int(width * 0.985), int(height * 0.125)
+    strip = rgb[y0:y1, x0:x1].mean(axis=2)
+    if strip.size == 0:
+        return None
+    ink = np.abs(strip - np.median(strip)) > 42
+    columns = ink.sum(axis=0)
+    runs, start = [], None
+    for index, value in enumerate(columns):
+        if value and start is None:
+            start = index
+        elif not value and start is not None:
+            if index - start >= 6:
+                runs.append([start, index])
+            start = None
+    if start is not None and len(columns) - start >= 6:
+        runs.append([start, len(columns)])
+    merged = []
+    for run in runs:
+        if merged and run[0] - merged[-1][1] < 14:
+            merged[-1][1] = run[1]
+        else:
+            merged.append(run)
+    # The countdown is words; the X beside it is one narrow glyph.
+    words = [run for run in merged if run[1] - run[0] >= 16]
+    if not words:
+        return None
+    rows = ink[:, words[0][0]:words[-1][1]]
+    found = np.nonzero(rows.any(axis=1))[0]
+    return (words[0][0] + x0, words[-1][1] + x0, int(found.min()) + y0,
+            int(found.max()) + y0)
+
+
+# Buttons of the "Close Video? / You will lose your reward" warning. Tapping
+# CLOSE VIDEO throws the reward away, so the tool must answer RESUME VIDEO and
+# wait for the ad to finish. The two are told apart by fill, not by wording,
+# so the language of the ad does not matter.
+AD_RESUME, AD_CONFIRM_CLOSE = "resume", "confirm-close"
+
+
+def ad_warning_dialog(rgb):
+    """(kind, point) when the ad asks whether to really close, else None.
+
+    The panel is a large pale card over the middle of the screen, carrying one
+    solid coloured button and one text-only button. The solid one continues the
+    ad: it is the safe answer, and the only one that keeps the reward.
+    """
+    height, width = rgb.shape[:2]
+    centre = rgb[int(height * 0.20):int(height * 0.78), int(width * 0.20):int(width * 0.72)]
+    if centre.size == 0:
+        return None
+    pale = float((centre.min(axis=2) > 225).mean())
+    if pale < 0.45:
+        return None
+    saturated = ((centre.max(axis=2) - centre.min(axis=2)) > 55) & (centre.min(axis=2) < 210)
+    rows = saturated.sum(axis=1)
+    if not rows.any():
+        return None
+    solid_rows = np.nonzero(rows > 0.35 * rows.max())[0]
+    if solid_rows.size < 12:
+        return None
+    band = saturated[solid_rows.min():solid_rows.max() + 1]
+    columns = band.sum(axis=0)
+    solid_cols = np.nonzero(columns > 0.55 * band.shape[0])[0]
+    if solid_cols.size < 24:
+        return None
+    point = (int(solid_cols.mean()) + int(width * 0.20),
+             int(solid_rows.mean()) + int(height * 0.20))
+    return AD_RESUME, point
+
+
+def in_payout_zone(point):
+    """True for the bottom strip an Install bar occupies.
+
+    Ads put a wide dark "Install" bar there, and a stray tap on it leaves the
+    ad for a store page. The whole strip is refused rather than only the bar
+    itself, because the bar's edges move between ads.
+    """
+    return point[1] >= 600
+
+
+def payout_pill(rgb):
+    """The big dark "Install" bar some ads put over the bottom of the screen.
+
+    It is never a close control: tapping it leaves the ad and opens a store
+    page, which is what the tool must not do. Only a wide, near-black, mostly
+    flat band counts.
+    """
+    height, width = rgb.shape[:2]
+    band = rgb[int(height * 0.88):height, int(width * 0.30):]
+    if band.size == 0:
+        return False
+    dark = band.max(axis=2) < 80
+    return bool(dark.mean() > 0.55 and dark.sum() > 0.55 * band.shape[0] * band.shape[1])
+
+
 class Vision:
     def __init__(self, upgrade_tower=False):
         with np.load(Path(__file__).with_name("play_templates.npz"), allow_pickle=False) as atlas:
@@ -532,6 +638,13 @@ class Vision:
             return Screen("ad_playing" if ad_foreground else "unknown")
         rgb = np.asarray(image, dtype=np.int16)
         if watching_ad or ad_foreground:
+            # Order matters. A warning dialog and a running countdown both sit
+            # above the ad, and neither may be treated as a finished end card:
+            # tapping their X abandons the reward and opens the store page.
+            if dialog := ad_warning_dialog(rgb):
+                return Screen("ad_warning", dialog[1], sub=dialog[0])
+            if countdown_band(rgb) is not None:
+                return Screen("ad_counting")
             extra = tuple(point for _, point in close_candidates(rgb))
             if point := self.reward_close(image):
                 return Screen("reward_granted", point, points=extra)
@@ -541,8 +654,11 @@ class Vision:
                    for name in ("ad_sheet_close", "ad_sheet_chevron", "ad_sheet_cta")):
                 return Screen("ad_end_sheet", (1257, 39), points=extra)
             chevrons = tuple(point for _, point in chevron_candidates(rgb))
-            if chevrons:
+            if chevrons and not payout_pill(rgb):
                 # A >> pages an end card forward; the X appears on the last one.
+                # It is only trusted when no Install bar is over the screen: a
+                # busy ad picture produces chevron shapes all the time, and the
+                # bottom-left one lands on artwork that opens the store.
                 return Screen("ad_end_card", chevrons[0],
                               points=chevrons[1:] + extra)
             if self.ad_chrome(rgb) and extra:
@@ -617,6 +733,10 @@ class Player:
         self.ad_taps = 0
         self.ad_tried_points = []
         self.ad_seen = set()
+        # An ad showing "Reward in N seconds" must be left alone: its X
+        # abandons the reward, so nothing is tapped until the counter is gone.
+        self.waiting_out_countdown = False
+        self.poked_warning = False
         self.skip_offer = False
         self.gold_before = None
         self.after_victory = False
@@ -639,17 +759,45 @@ class Player:
         self.ad_taps = 0
         self.ad_tried_points.clear()
         self.ad_seen.clear()
+        self.poked_warning = False
+        self.waiting_out_countdown = False
 
     def feed_ad(self, time, screen, age):
         name = screen.name
         if name in AD_CLOSE_SCREENS:
             self.ad_seen.add(name)
+        if name == "ad_warning":
+            # The ad asked whether to really leave. Answer the button that
+            # keeps the reward, and treat the ad as still running afterwards.
+            if screen.sub == AD_RESUME and time - self.last_ad_tap >= 1.4:
+                self.last_ad_tap = time
+                self.ad = "playing"
+                self.poked_warning = False
+                # Resuming puts the ad back on its counter, which its own X
+                # would abandon. Nothing else may be tapped until it ends.
+                self.waiting_out_countdown = True
+                return Action("keep watching ad", screen.point)
+            if time - self.last_ad_tap >= 1.4 and not self.poked_warning:
+                # The panel was already up when the tool arrived, so the ad
+                # itself was probably dismissed by a tap it made earlier.
+                self.poked_warning = True
+                self.last_ad_tap = time
+                return Action("keep watching ad", screen.point)
+            return None
+        if name == "ad_counting":
+            # Time left on the counter: there is a finished ad underneath the
+            # X but tapping it now throws the reward away. Wait it out.
+            if self.ad == "watch":
+                self.ad = "playing"
+            self.waiting_out_countdown = True
+            return None
         if name == "ad_playing":
             if self.ad == "watch":
                 self.ad = "playing"
             if age >= 1.5:
                 self.ad_close_attempts.clear()
         elif name in AD_CLOSE_SCREENS:
+            self.waiting_out_countdown = False
             self.ad = "return"
             self.reward_label_seen |= name == "reward_granted"
             options = [screen.point]
@@ -699,7 +847,7 @@ class Player:
         any position and in any language, a drawn chevron that pages the ad
         forward, and BACK for an end card that shows no control at all.
         """
-        if time - self.last_device_close < 2.5:
+        if self.waiting_out_countdown or time - self.last_device_close < 2.5:
             return None
         self.last_device_close = time
         point = ad_close.close_from_widgets(adb, serial)
@@ -717,12 +865,17 @@ class Player:
         """Keep trying visible X buttons when a finished ad refuses to close."""
         if self.ad == "device":
             return None
+        if self.waiting_out_countdown or screen.name in {"ad_counting", "ad_warning"}:
+            # The counter is still running. Its X is real but tapping it asks
+            # whether to abandon the reward, and the ad underneath often has an
+            # Install bar in a corner: guessing there opens a store page.
+            return None
         if not self.ad or still_for < STILL_FRAME:
             return None
         if time - self.ad_since < self.ad_minimum():
             return None
         options = [screen.point, *screen.points]
-        options = [point for point in options if point]
+        options = [point for point in options if point and not in_payout_zone(point)]
         if not options or time - self.last_ad_tap < 1.4:
             return None
         for point in options:
